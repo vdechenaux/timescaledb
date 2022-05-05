@@ -90,3 +90,7 @@ ALTER TABLE _timescaledb_catalog.continuous_agg
 CREATE OR REPLACE FUNCTION timescaledb_experimental.subscription_cmd(
     subscription_cmd TEXT
 ) RETURNS VOID AS '@MODULE_PATHNAME@', 'ts_subscription_cmd' LANGUAGE C VOLATILE;
+
+DROP PROCEDURE IF EXISTS timescaledb_experimental.move_chunk(REGCLASS, NAME, NAME);
+
+DROP PROCEDURE IF EXISTS timescaledb_experimental.copy_chunk(REGCLASS, NAME, NAME);
