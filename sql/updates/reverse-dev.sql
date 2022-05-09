@@ -100,3 +100,5 @@ ALTER TABLE _timescaledb_catalog.continuous_aggs_materialization_invalidation_lo
         REFERENCES _timescaledb_catalog.continuous_agg(mat_hypertable_id) ON DELETE CASCADE;
 
 ANALYZE _timescaledb_catalog.continuous_agg;
+
+DROP FUNCTION IF EXISTS timescaledb_experimental.subscription_cmd(TEXT);

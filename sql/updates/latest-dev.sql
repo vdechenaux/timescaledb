@@ -86,3 +86,7 @@ UPDATE _timescaledb_catalog.continuous_agg SET finalized = FALSE;
 ALTER TABLE _timescaledb_catalog.continuous_agg
   ALTER COLUMN finalized SET NOT NULL,
   ALTER COLUMN finalized SET DEFAULT TRUE;
+
+CREATE OR REPLACE FUNCTION timescaledb_experimental.subscription_cmd(
+    subscription_cmd TEXT
+) RETURNS VOID AS '@MODULE_PATHNAME@', 'ts_subscription_cmd' LANGUAGE C VOLATILE;

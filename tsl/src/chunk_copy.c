@@ -5,6 +5,7 @@
  */
 #include <postgres.h>
 #include <foreign/foreign.h>
+#include <catalog/pg_authid.h>
 #include <catalog/pg_foreign_server.h>
 #include <catalog/pg_foreign_table.h>
 #include <catalog/dependency.h>
@@ -260,10 +261,11 @@ chunk_copy_setup(ChunkCopy *cc, Oid chunk_relid, const char *src_node, const cha
 	Cache *hcache;
 	MemoryContext old, mcxt;
 
-	if (!superuser())
+	if (!superuser() && !has_rolreplication(GetUserId()))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to copy/move chunk to data node"))));
+				 (errmsg(
+					 "must be superuser or replication role to copy/move chunk to data node"))));
 
 	if (dist_util_membership() != DIST_MEMBER_ACCESS_NODE)
 		ereport(ERROR,
@@ -518,18 +520,21 @@ chunk_copy_stage_create_publication_cleanup(ChunkCopy *cc)
 static void
 chunk_copy_stage_create_subscription(ChunkCopy *cc)
 {
-	const char *cmd;
+	char *cmd, *cmd1;
 	const char *connection_string;
 
 	/* Prepare connection string to the source node */
 	connection_string = remote_connection_get_connstr(NameStr(cc->fd.source_node_name));
 
-	cmd = psprintf("CREATE SUBSCRIPTION %s CONNECTION '%s' PUBLICATION %s"
-				   " WITH (create_slot = false, enabled = false)",
-				   NameStr(cc->fd.operation_id),
-				   connection_string,
-				   NameStr(cc->fd.operation_id));
+	cmd1 = psprintf("CREATE SUBSCRIPTION %s CONNECTION '%s' PUBLICATION %s"
+					" WITH (create_slot = false, enabled = false)",
+					NameStr(cc->fd.operation_id),
+					connection_string,
+					NameStr(cc->fd.operation_id));
+	cmd = psprintf("SELECT timescaledb_experimental.subscription_cmd($sql$%s$sql$)", cmd1);
 	ts_dist_cmd_run_on_data_nodes(cmd, list_make1(NameStr(cc->fd.dest_node_name)), true);
+	pfree(cmd1);
+	pfree(cmd);
 }
 
 static void
@@ -572,11 +577,14 @@ chunk_copy_stage_create_subscription_cleanup(ChunkCopy *cc)
 static void
 chunk_copy_stage_sync_start(ChunkCopy *cc)
 {
-	const char *cmd;
+	char *cmd, *cmd1;
 
 	/* Start data transfer on the destination node */
-	cmd = psprintf("ALTER SUBSCRIPTION %s ENABLE", NameStr(cc->fd.operation_id));
+	cmd1 = psprintf("ALTER SUBSCRIPTION %s ENABLE", NameStr(cc->fd.operation_id));
+	cmd = psprintf("SELECT timescaledb_experimental.subscription_cmd($sql$%s$sql$)", cmd1);
 	ts_dist_cmd_run_on_data_nodes(cmd, list_make1(NameStr(cc->fd.dest_node_name)), true);
+	pfree(cmd1);
+	pfree(cmd);
 }
 
 static void
@@ -635,21 +643,27 @@ chunk_copy_stage_sync(ChunkCopy *cc)
 static void
 chunk_copy_stage_drop_subscription(ChunkCopy *cc)
 {
-	char *cmd;
+	char *cmd1, *cmd;
 
 	/* Stop data transfer on the destination node */
-	cmd = psprintf("ALTER SUBSCRIPTION %s DISABLE", NameStr(cc->fd.operation_id));
+	cmd1 = psprintf("ALTER SUBSCRIPTION %s DISABLE", NameStr(cc->fd.operation_id));
+	cmd = psprintf("SELECT timescaledb_experimental.subscription_cmd($sql$%s$sql$)", cmd1);
 	ts_dist_cmd_run_on_data_nodes(cmd, list_make1(NameStr(cc->fd.dest_node_name)), true);
+	pfree(cmd1);
 	pfree(cmd);
 
 	/* Disassociate the subscription from the replication slot first */
-	cmd = psprintf("ALTER SUBSCRIPTION %s SET (slot_name = NONE)", NameStr(cc->fd.operation_id));
+	cmd1 = psprintf("ALTER SUBSCRIPTION %s SET (slot_name = NONE)", NameStr(cc->fd.operation_id));
+	cmd = psprintf("SELECT timescaledb_experimental.subscription_cmd($sql$%s$sql$)", cmd1);
 	ts_dist_cmd_run_on_data_nodes(cmd, list_make1(NameStr(cc->fd.dest_node_name)), true);
+	pfree(cmd1);
 	pfree(cmd);
 
 	/* Drop the subscription now */
-	cmd = psprintf("DROP SUBSCRIPTION %s", NameStr(cc->fd.operation_id));
+	cmd1 = psprintf("DROP SUBSCRIPTION %s", NameStr(cc->fd.operation_id));
+	cmd = psprintf("SELECT timescaledb_experimental.subscription_cmd($sql$%s$sql$)", cmd1);
 	ts_dist_cmd_run_on_data_nodes(cmd, list_make1(NameStr(cc->fd.dest_node_name)), true);
+	pfree(cmd1);
 	pfree(cmd);
 }
 
@@ -938,10 +952,11 @@ chunk_copy_cleanup(const char *operation_id)
 	bool found = false;
 	int stage_idx;
 
-	if (!superuser())
+	if (!superuser() && !has_rolreplication(GetUserId()))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to cleanup a chunk copy operation"))));
+				 (errmsg(
+					 "must be superuser or replication role to cleanup a chunk copy operation"))));
 
 	if (dist_util_membership() != DIST_MEMBER_ACCESS_NODE)
 		ereport(ERROR,
