@@ -1129,10 +1129,7 @@ remote_copy_process_and_send_data(RemoteCopyContext *context)
 	 * Actually send the data to the data nodes. We don't interleave the data
 	 * nodes here, because the batches are relatively small.
 	 */
-	StringInfoData copy_data = {
-		.data = palloc(MAX_BATCH_BYTES),
-		.maxlen = MAX_BATCH_BYTES
-	};
+	StringInfoData copy_data = { .data = palloc(MAX_BATCH_BYTES), .maxlen = MAX_BATCH_BYTES };
 	foreach (lc, data_nodes)
 	{
 		DataNodeRows *dn = lfirst(lc);
