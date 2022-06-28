@@ -2176,6 +2176,15 @@ remote_connection_begin_copy(TSConnection *conn, const char *copycmd, bool binar
 	if (binary && !send_binary_copy_header(conn, err))
 		goto err_end_copy;
 
+	if (PQsetnonblocking(pg_conn, 1))
+	{
+		(void) fill_simple_error(err,
+								 ERRCODE_CONNECTION_EXCEPTION,
+								 "failed to set the connection into nonblocking mode",
+								 conn);
+		goto err_end_copy;
+	}
+
 	conn->binary_copy = binary;
 	conn->status = CONN_COPY_IN;
 
@@ -2226,6 +2235,67 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 								 "connection not in COPY_IN state when ending COPY",
 								 conn);
 
+	/*
+	 * We have to flush the connection before we can switch it into blocking mode.
+	 */
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+
+		int flush_result = PQflush(conn->pg_conn);
+
+		if (flush_result == 1)
+		{
+			/* The socket is busy, wait for it to become writable. */
+			const int wait_result = WaitLatchOrSocket(MyLatch,
+													  PQsocket(conn->pg_conn),
+													  WL_TIMEOUT | WL_SOCKET_WRITEABLE,
+													  /* timeout = */ 1000,
+													  /* wait_event_info = */ 0);
+
+			if (wait_result == 1)
+			{
+				/* Socket writeable. */
+				continue;
+			}
+			else if (wait_result == 0)
+			{
+				/* The write to socket is taking some time. Let's just retry. */
+				continue;
+			}
+			else
+			{
+				/* We shouldn't really have two or more events occur here. */
+				elog(ERROR,
+					 "WaitLatchOrSocket returns unexpected result %d while waiting to flush COPY "
+					 "data",
+					 wait_result);
+			}
+		}
+		else if (flush_result == 0)
+		{
+			/* Flushed all. */
+			break;
+		}
+		else
+		{
+			/* Error. */
+			return fill_simple_error(err,
+									 ERRCODE_CONNECTION_EXCEPTION,
+									 "failed to flush the COPY connection",
+									 conn);
+		}
+	}
+
+	/* Switch the connection into blocking mode. */
+	if (PQsetnonblocking(conn->pg_conn, 0))
+	{
+		return fill_simple_error(err,
+								 ERRCODE_CONNECTION_EXCEPTION,
+								 "failed to set the connection into blocking mode",
+								 conn);
+	}
+
 	if (conn->binary_copy && !send_end_binary_copy_data(conn, err))
 		return false;
 
@@ -2239,11 +2309,18 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 	conn->status = CONN_PROCESSING;
 
 	while ((res = PQgetResult(conn->pg_conn)))
-		if (PQresultStatus(res) != PGRES_COMMAND_OK)
-			success = fill_result_error(err,
-										ERRCODE_CONNECTION_EXCEPTION,
-										"invalid result when ending remote COPY",
-										res);
+	{
+		ExecStatusType status = PQresultStatus(res);
+		if (status != PGRES_COMMAND_OK)
+		{
+			success =
+				fill_result_error(err,
+								  ERRCODE_CONNECTION_EXCEPTION,
+								  psprintf("invalid result status '%s' when ending remote COPY",
+										   PQresStatus(status)),
+								  res);
+		}
+	}
 
 	Assert(res == NULL);
 	conn->status = CONN_IDLE;
