@@ -7,13 +7,12 @@
 
 #include <commands/dbcommands.h>
 #include <fmgr.h>
-#include <miscadmin.h>
 #include <postgres.h>
+#include <storage/latch.h>
 #include <storage/proc.h>
 #include <storage/procarray.h>
 #include <utils/builtins.h>
 #include <utils/elog.h>
-#include <utils/wait_event.h>
 
 #include "debug_point.h"
 
