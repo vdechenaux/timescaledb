@@ -25,7 +25,6 @@ set client_min_messages to error;
 
 -- Disable SSL to get stable error output across versions. SSL adds some output
 -- that changed in PG 14.
-\c -reuse-previous=on sslmode=disable
 set timescaledb.debug_enable_ssl to off;
 set client_min_messages to error;
 
