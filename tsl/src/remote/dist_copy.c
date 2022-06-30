@@ -348,8 +348,61 @@ create_connection_list_for_chunk(CopyConnectionState *state, int32 chunk_id,
 static void
 flush_active_connections(const CopyConnectionState *state)
 {
-	List *to_flush = list_copy(state->connections_in_use);
+	List *to_end_copy = NIL;
+	ListCell *active_cell;
+	foreach (active_cell, state->connections_in_use)
+	{
+		TSConnection *conn = lfirst(active_cell);
+
+		TSConnectionStatus status = remote_connection_get_status(conn);
+		if (status != CONN_COPY_IN)
+		{
+			/*
+			 * This is also called when terminating with error, so some
+			 * connections might be in some error status, not CONN_COPY_IN.
+			 */
+			continue;
+		}
+
+		PGconn *pg_conn = remote_connection_get_pg_conn(conn);
+		Assert(PQisnonblocking(pg_conn));
+
+		PGresult *res = PQgetResult(pg_conn);
+		if (res == NULL || PQresultStatus(res) != PGRES_COPY_IN)
+		{
+			/*
+			 * No actual COPY on the connection, this is an internal program error.
+			 */
+			elog(ERROR, "connection marked as CONN_COPY_IN, but no COPY is in progress when flushing data nodes");
+		}
+
+		to_end_copy = lappend(to_end_copy, conn);
+
+		if (PQputCopyEnd(pg_conn, NULL) != 1)
+		{
+			ereport(ERROR, (errmsg("could not end remote COPY"),
+				errdetail("%s", PQerrorMessage(pg_conn))));
+		}
+
+		remote_connection_set_status(conn, CONN_PROCESSING);
+	}
+
+	/*
+	 * First, concurrently flush the remaining write buffers to the remote
+	 * servers. Then, read out the CopyEnd response. It might also be delayed
+	 * while the server is processing the received data.
+	 */
+	List *to_flush = list_copy(to_end_copy);
+	/*
+	 * The connections that were busy on this step and that we have to flush
+	 * again.
+	 */
 	List *to_flush_next = NIL;
+	/*
+	 * Parallel list of what we have to wait for (read/write) for each
+	 * connection.
+	 */
+	List *wait_events = NIL;
 	for (;;)
 	{
 		CHECK_FOR_INTERRUPTS();
@@ -358,20 +411,10 @@ flush_active_connections(const CopyConnectionState *state)
 		foreach (to_flush_cell, to_flush)
 		{
 			TSConnection *conn = lfirst(to_flush_cell);
-
-			TSConnectionStatus status = remote_connection_get_status(conn);
-			if (status != CONN_COPY_IN)
-			{
-				/*
-				 * This is also called when terminating with error, so some
-				 * connections might be in some error status, not CONN_COPY_IN.
-				 */
-				continue;
-			}
-
 			PGconn *pg_conn = remote_connection_get_pg_conn(conn);
 			Assert(PQisnonblocking(pg_conn));
 
+			/* Write out all the pending buffers. */
 			int res = PQflush(pg_conn);
 			if (res == -1)
 			{
@@ -388,7 +431,29 @@ flush_active_connections(const CopyConnectionState *state)
 				/* Busy. */
 				Assert(res == 1);
 				to_flush_next = lappend(to_flush_next, conn);
+				wait_events = lappend_int(wait_events, WL_SOCKET_WRITEABLE);
+				fprintf(stderr, "wait for writable socket!!!!\n");
+				continue;
 			}
+
+			/* Then, read out the final result. */
+			res = PQconsumeInput(pg_conn);
+			if (res == 0)
+			{
+				TSConnectionError err;
+				remote_connection_get_error(conn, &err);
+				remote_connection_error_elog(&err, ERROR);
+			}
+
+			if (PQisBusy(pg_conn))
+			{
+				/* Busy. */
+				to_flush_next = lappend(to_flush_next, conn);
+				wait_events = lappend_int(wait_events, WL_SOCKET_READABLE);
+				continue;
+			}
+
+			/* Hooray, done with this connection. */
 		}
 
 		if (list_length(to_flush_next) == 0)
@@ -398,17 +463,20 @@ flush_active_connections(const CopyConnectionState *state)
 		}
 
 		/*
+		 * Wait for changes on busy connections.
 		 * Postgres API doesn't allow to remove a socket from the wait event,
 		 * and it's level-triggered, so we have to recreate the set each time.
 		 */
 		WaitEventSet *set = CreateWaitEventSet(CurrentMemoryContext, list_length(to_flush_next));
 		ListCell *set_cell;
-		foreach (set_cell, to_flush_next)
+		ListCell *events_cell;
+		Assert(list_length(to_flush_next) == list_length(wait_events));
+		forboth (set_cell, to_flush_next, events_cell, wait_events)
 		{
 			TSConnection *conn = lfirst(set_cell);
 			PGconn *pg_conn = remote_connection_get_pg_conn(conn);
 			(void) AddWaitEventToSet(set,
-									 /* events = */ WL_SOCKET_WRITEABLE,
+									 /* events = */ lfirst_int(events_cell),
 									 PQsocket(pg_conn),
 									 /* latch = */ NULL,
 									 /* user_data = */ NULL);
@@ -436,10 +504,67 @@ flush_active_connections(const CopyConnectionState *state)
 		to_flush = tmp;
 
 		to_flush_next = list_truncate(to_flush_next, 0);
+		wait_events = list_truncate(wait_events, 0);
 	}
 
-	list_free(to_flush);
-	list_free(to_flush_next);
+	/*
+	 * 3. Clean up the connections (this isn't viable! FIXME)
+	 */
+	ListCell *lc;
+	foreach(lc, to_end_copy)
+	{
+		TSConnection *conn = lfirst(lc);
+		PGconn *pg_conn = remote_connection_get_pg_conn(conn);
+
+		/*
+		 * Mark connection as idle in any case, to prevent sticky error state.
+		 */
+		remote_connection_set_status(conn, CONN_IDLE);
+
+		/*
+		 * Switch the connection back into blocking mode because that's what the
+		 * non-COPY code expects.
+		 */
+		if (PQsetnonblocking(pg_conn, 0))
+		{
+			ereport(ERROR, (errmsg("failed to switch the connection into blocking mode"),
+				errdetail("%s", PQerrorMessage(pg_conn))));
+		}
+	}
+
+	/*
+	 * 4. Verify the EndCopy result.
+	 */
+	foreach(lc, to_end_copy)
+	{
+		TSConnection *conn = lfirst(lc);
+		PGconn *pg_conn = remote_connection_get_pg_conn(conn);
+
+		/*
+		 * Verify that the copy has ended.
+		 */
+		PGresult *res = PQgetResult(pg_conn);
+		if (res == NULL)
+		{
+			ereport(ERROR, (errmsg("unexpected NULL result when ending remote COPY")));
+		}
+
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		{
+			TSConnectionError err;
+			remote_connection_get_result_error(res, &err);
+			remote_connection_error_elog(&err, ERROR);
+		}
+
+		res = PQgetResult(pg_conn);
+		if (res != NULL)
+		{
+			ereport(ERROR, (errmsg("unexpected non-NULL result %d when ending remote COPY",
+				PQresultStatus(res)), errdetail("%s", PQerrorMessage(pg_conn))));
+		}
+	}
+
+	list_free(to_end_copy);
 }
 
 static void
@@ -981,12 +1106,8 @@ remote_copy_process_and_send_data(RemoteCopyContext *context)
 	 */
 	List *data_nodes = NIL;
 
-	/*
-	 * For each row, find or create the destination chunk. Note that the data
-	 * node connections have to be flushed before this. They might have
-	 * outstanding COPY data from the previous batch.
-	 */
-	flush_active_connections(&context->connection_state);
+	/* For each row, find or create the destination chunk. */
+	bool did_flush = false;
 	for (int row_in_batch = 0; row_in_batch < n; row_in_batch++)
 	{
 		Point *point = context->batch_points[row_in_batch];
@@ -994,6 +1115,16 @@ remote_copy_process_and_send_data(RemoteCopyContext *context)
 		Chunk *chunk = ts_hypertable_find_chunk_for_point(ht, point);
 		if (chunk == NULL)
 		{
+			if (!did_flush)
+			{
+				/*
+				 * The data node connections have to be flushed before creating
+				 * a new chunk. They might have outstanding COPY data from the
+				 * previous batch.
+				 */
+				flush_active_connections(&context->connection_state);
+				did_flush = true;
+			}
 			chunk = ts_hypertable_create_chunk_for_point(ht, point);
 		}
 
@@ -1153,8 +1284,9 @@ remote_copy_process_and_send_data(RemoteCopyContext *context)
 		if (res == -1)
 		{
 			ereport(ERROR,
-					errcode(ERRCODE_CONNECTION_EXCEPTION),
-					errmsg("could not send COPY data"));
+					(errcode(ERRCODE_CONNECTION_EXCEPTION),
+					errmsg("could not send COPY data"),
+					errdetail("%s", PQerrorMessage(pg_conn))));
 		}
 
 		/*

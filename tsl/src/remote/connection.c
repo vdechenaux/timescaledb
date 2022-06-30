@@ -749,7 +749,7 @@ remote_connection_create(PGconn *pg_conn, bool processing, const char *node_name
 	conn->ln.next = conn->ln.prev = NULL;
 	conn->pg_conn = pg_conn;
 	conn->closing_guard = false;
-	conn->status = processing ? CONN_PROCESSING : CONN_IDLE;
+	remote_connection_set_status(conn, processing ? CONN_PROCESSING : CONN_IDLE);
 	namestrcpy(&conn->node_name, node_name);
 	conn->tz_name = NULL;
 	conn->autoclose = true;
@@ -1842,7 +1842,7 @@ remote_connection_drain(TSConnection *conn, TimestampTz endtime, PGresult **resu
 			if (res == NULL)
 			{
 				/* query is complete */
-				conn->status = CONN_IDLE;
+				remote_connection_set_status(conn, CONN_IDLE);
 				connresult = CONN_OK;
 				break;
 			}
@@ -1942,7 +1942,7 @@ remote_connection_cancel_query(TSConnection *conn)
 						(errcode(ERRCODE_CONNECTION_FAILURE),
 						 errmsg("could not send cancel request: %s", errbuf)));
 				PQfreeCancel(cancel);
-				conn->status = CONN_IDLE;
+				remote_connection_set_status(conn, CONN_IDLE);
 				return false;
 			}
 			PQfreeCancel(cancel);
@@ -1963,12 +1963,12 @@ remote_connection_cancel_query(TSConnection *conn)
 	}
 	PG_CATCH();
 	{
-		conn->status = CONN_IDLE;
+		remote_connection_set_status(conn, CONN_IDLE);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
-	conn->status = CONN_IDLE;
+	remote_connection_set_status(conn, CONN_IDLE);
 
 	return success;
 }
@@ -2186,7 +2186,7 @@ remote_connection_begin_copy(TSConnection *conn, const char *copycmd, bool binar
 	}
 
 	conn->binary_copy = binary;
-	conn->status = CONN_COPY_IN;
+	remote_connection_set_status(conn, CONN_COPY_IN);
 
 	return true;
 err_end_copy:
@@ -2296,6 +2296,16 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 								 conn);
 	}
 
+	/*
+	 * Check whether it's in actual COPY mode. dist_copy manages COPY protocol
+	 * itself because it needs to work with multiple connections concurrently.
+	 */
+	res = PQgetResult(conn->pg_conn);
+	if (res == NULL || PQresultStatus(res) != PGRES_COPY_IN)
+	{
+		elog(ERROR, "connection marked as CONN_COPY_IN, but no COPY is in progress");
+	}
+
 	if (conn->binary_copy && !send_end_binary_copy_data(conn, err))
 		return false;
 
@@ -2306,7 +2316,7 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 								 conn);
 
 	success = true;
-	conn->status = CONN_PROCESSING;
+	remote_connection_set_status(conn, CONN_PROCESSING);
 
 	while ((res = PQgetResult(conn->pg_conn)))
 	{
@@ -2323,7 +2333,7 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 	}
 
 	Assert(res == NULL);
-	conn->status = CONN_IDLE;
+	remote_connection_set_status(conn, CONN_IDLE);
 
 	return success;
 }
