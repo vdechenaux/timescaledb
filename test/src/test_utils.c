@@ -7,6 +7,7 @@
 
 #include <commands/dbcommands.h>
 #include <fmgr.h>
+#include <miscadmin.h>
 #include <postgres.h>
 #include <storage/latch.h>
 #include <storage/proc.h>
@@ -169,7 +170,7 @@ ts_debug_sleepy_int4recv(PG_FUNCTION_ARGS)
 		(void) WaitLatch(MyLatch,
 						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 						 1000,
-						 WAIT_EVENT_PG_SLEEP);
+						 /* wait_event_info = */ 0);
 		ResetLatch(MyLatch);
 
 		rows_seen = 0;
