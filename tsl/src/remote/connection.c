@@ -2254,31 +2254,16 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 
 			if (flush_result == 1)
 			{
-				/* The socket is busy, wait for it to become writable. */
-				const int wait_result = WaitLatchOrSocket(MyLatch,
-														  PQsocket(conn->pg_conn),
-														  WL_TIMEOUT | WL_SOCKET_WRITEABLE,
-														  /* timeout = */ 1000,
-														  /* wait_event_info = */ 0);
-
-				if (wait_result == 1)
-				{
-					/* Socket writeable. */
-					continue;
-				}
-				else if (wait_result == 0)
-				{
-					/* The write to socket is taking some time. Let's just retry. */
-					continue;
-				}
-				else
-				{
-					/* We shouldn't really have two or more events occur here. */
-					elog(ERROR,
-						 "WaitLatchOrSocket returns unexpected result %d while waiting to flush COPY "
-						 "data",
-						 wait_result);
-				}
+				/*
+				 * The socket is busy, wait. We don't care about the wait result
+				 * here, because whether it is a timeout or the socket became
+				 * writeable, we just retry.
+				 */
+				(void) WaitLatchOrSocket(MyLatch,
+										 PQsocket(conn->pg_conn),
+										 WL_TIMEOUT | WL_SOCKET_WRITEABLE,
+										 /* timeout = */ 1000,
+										 /* wait_event_info = */ 0);
 			}
 			else if (flush_result == 0)
 			{
@@ -2313,7 +2298,6 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 								 ERRCODE_INTERNAL_ERROR,
 								 "connection not in COPY_IN state when ending COPY",
 								 conn);
-
 
 	/*
 	 * Check whether it's still in COPY mode. The dist_copy manages COPY
