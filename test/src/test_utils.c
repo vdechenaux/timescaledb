@@ -9,11 +9,11 @@
 #include <fmgr.h>
 #include <miscadmin.h>
 #include <postgres.h>
+#include <storage/latch.h>
 #include <storage/proc.h>
 #include <storage/procarray.h>
 #include <utils/builtins.h>
 #include <utils/elog.h>
-#include <utils/wait_event.h>
 
 #include "debug_point.h"
 
@@ -170,7 +170,7 @@ ts_debug_sleepy_int4recv(PG_FUNCTION_ARGS)
 		(void) WaitLatch(MyLatch,
 						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 						 1000,
-						 WAIT_EVENT_PG_SLEEP);
+						 /* wait_event_info = */ 0);
 		ResetLatch(MyLatch);
 
 		rows_seen = 0;

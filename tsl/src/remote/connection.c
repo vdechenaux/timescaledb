@@ -2223,86 +2223,109 @@ send_end_binary_copy_data(const TSConnection *conn, TSConnectionError *err)
 	return true;
 }
 
+/*
+ * End COPY on the remote connection.
+ * This function is used to clean up after errors as well, so it works in a
+ * recovery fashion: it tries to bring the connection into predictable and
+ * usable state, even if there are some errors or discrepancies between its
+ * actual and expected state.
+ */
 bool
 remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 {
 	PGresult *res;
 	bool success;
 
+	/*
+	 * In any case, try to switch the connection into the blocking mode, because
+	 * that's what the non-COPY code expects.
+	 */
+	if (PQisnonblocking(conn->pg_conn))
+	{
+		/*
+		 * We have to flush the connection before we can switch it into blocking
+		 * mode.
+		 */
+		for (;;)
+		{
+			CHECK_FOR_INTERRUPTS();
+
+			int flush_result = PQflush(conn->pg_conn);
+
+			if (flush_result == 1)
+			{
+				/* The socket is busy, wait for it to become writable. */
+				const int wait_result = WaitLatchOrSocket(MyLatch,
+														  PQsocket(conn->pg_conn),
+														  WL_TIMEOUT | WL_SOCKET_WRITEABLE,
+														  /* timeout = */ 1000,
+														  /* wait_event_info = */ 0);
+
+				if (wait_result == 1)
+				{
+					/* Socket writeable. */
+					continue;
+				}
+				else if (wait_result == 0)
+				{
+					/* The write to socket is taking some time. Let's just retry. */
+					continue;
+				}
+				else
+				{
+					/* We shouldn't really have two or more events occur here. */
+					elog(ERROR,
+						 "WaitLatchOrSocket returns unexpected result %d while waiting to flush COPY "
+						 "data",
+						 wait_result);
+				}
+			}
+			else if (flush_result == 0)
+			{
+				/* Flushed all. */
+				break;
+			}
+			else
+			{
+				/* Error. */
+				return fill_simple_error(err,
+										 ERRCODE_CONNECTION_EXCEPTION,
+										 "failed to flush the COPY connection",
+										 conn);
+			}
+		}
+
+		/* Switch the connection into blocking mode. */
+		if (PQsetnonblocking(conn->pg_conn, 0))
+		{
+			return fill_simple_error(err,
+									 ERRCODE_CONNECTION_EXCEPTION,
+									 "failed to set the connection into blocking mode",
+									 conn);
+		}
+	}
+
+	/*
+	 * Shouldn't have been called for a connection we know is not in COPY mode.
+	 */
 	if (conn->status != CONN_COPY_IN)
 		return fill_simple_error(err,
 								 ERRCODE_INTERNAL_ERROR,
 								 "connection not in COPY_IN state when ending COPY",
 								 conn);
 
-	/*
-	 * We have to flush the connection before we can switch it into blocking mode.
-	 */
-	for (;;)
-	{
-		CHECK_FOR_INTERRUPTS();
-
-		int flush_result = PQflush(conn->pg_conn);
-
-		if (flush_result == 1)
-		{
-			/* The socket is busy, wait for it to become writable. */
-			const int wait_result = WaitLatchOrSocket(MyLatch,
-													  PQsocket(conn->pg_conn),
-													  WL_TIMEOUT | WL_SOCKET_WRITEABLE,
-													  /* timeout = */ 1000,
-													  /* wait_event_info = */ 0);
-
-			if (wait_result == 1)
-			{
-				/* Socket writeable. */
-				continue;
-			}
-			else if (wait_result == 0)
-			{
-				/* The write to socket is taking some time. Let's just retry. */
-				continue;
-			}
-			else
-			{
-				/* We shouldn't really have two or more events occur here. */
-				elog(ERROR,
-					 "WaitLatchOrSocket returns unexpected result %d while waiting to flush COPY "
-					 "data",
-					 wait_result);
-			}
-		}
-		else if (flush_result == 0)
-		{
-			/* Flushed all. */
-			break;
-		}
-		else
-		{
-			/* Error. */
-			return fill_simple_error(err,
-									 ERRCODE_CONNECTION_EXCEPTION,
-									 "failed to flush the COPY connection",
-									 conn);
-		}
-	}
-
-	/* Switch the connection into blocking mode. */
-	if (PQsetnonblocking(conn->pg_conn, 0))
-	{
-		return fill_simple_error(err,
-								 ERRCODE_CONNECTION_EXCEPTION,
-								 "failed to set the connection into blocking mode",
-								 conn);
-	}
 
 	/*
-	 * Check whether it's in actual COPY mode. dist_copy manages COPY protocol
-	 * itself because it needs to work with multiple connections concurrently.
+	 * Check whether it's still in COPY mode. The dist_copy manages COPY
+	 * protocol itself because it needs to work with multiple connections
+	 * concurrently. The remote server might leave the COPY mode for own
+	 * reasons, as well. If we discover this, update our info with the actual
+	 * status, but still report the error.
 	 */
 	res = PQgetResult(conn->pg_conn);
 	if (res == NULL || PQresultStatus(res) != PGRES_COPY_IN)
 	{
+		remote_connection_set_status(conn, res == NULL ? CONN_IDLE : CONN_PROCESSING);
 		elog(ERROR, "connection marked as CONN_COPY_IN, but no COPY is in progress");
 	}
 
