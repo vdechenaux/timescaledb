@@ -373,15 +373,18 @@ flush_active_connections(const CopyConnectionState *state)
 			/*
 			 * No actual COPY on the connection, this is an internal program error.
 			 */
-			elog(ERROR, "connection marked as CONN_COPY_IN, but no COPY is in progress when flushing data nodes");
+			elog(ERROR,
+				 "connection marked as CONN_COPY_IN, but no COPY is in progress when flushing data "
+				 "nodes");
 		}
 
 		to_end_copy = lappend(to_end_copy, conn);
 
 		if (PQputCopyEnd(pg_conn, NULL) != 1)
 		{
-			ereport(ERROR, (errmsg("could not end remote COPY"),
-				errdetail("%s", PQerrorMessage(pg_conn))));
+			ereport(ERROR,
+					(errmsg("could not end remote COPY"),
+					 errdetail("%s", PQerrorMessage(pg_conn))));
 		}
 
 		remote_connection_set_status(conn, CONN_PROCESSING);
@@ -511,7 +514,7 @@ flush_active_connections(const CopyConnectionState *state)
 	 * 3. Clean up the connections (this isn't viable! FIXME)
 	 */
 	ListCell *lc;
-	foreach(lc, to_end_copy)
+	foreach (lc, to_end_copy)
 	{
 		TSConnection *conn = lfirst(lc);
 		PGconn *pg_conn = remote_connection_get_pg_conn(conn);
@@ -527,15 +530,16 @@ flush_active_connections(const CopyConnectionState *state)
 		 */
 		if (PQsetnonblocking(pg_conn, 0))
 		{
-			ereport(ERROR, (errmsg("failed to switch the connection into blocking mode"),
-				errdetail("%s", PQerrorMessage(pg_conn))));
+			ereport(ERROR,
+					(errmsg("failed to switch the connection into blocking mode"),
+					 errdetail("%s", PQerrorMessage(pg_conn))));
 		}
 	}
 
 	/*
 	 * 4. Verify the EndCopy result.
 	 */
-	foreach(lc, to_end_copy)
+	foreach (lc, to_end_copy)
 	{
 		TSConnection *conn = lfirst(lc);
 		PGconn *pg_conn = remote_connection_get_pg_conn(conn);
@@ -559,8 +563,10 @@ flush_active_connections(const CopyConnectionState *state)
 		res = PQgetResult(pg_conn);
 		if (res != NULL)
 		{
-			ereport(ERROR, (errmsg("unexpected non-NULL result %d when ending remote COPY",
-				PQresultStatus(res)), errdetail("%s", PQerrorMessage(pg_conn))));
+			ereport(ERROR,
+					(errmsg("unexpected non-NULL result %d when ending remote COPY",
+							PQresultStatus(res)),
+					 errdetail("%s", PQerrorMessage(pg_conn))));
 		}
 	}
 
@@ -1285,8 +1291,8 @@ remote_copy_process_and_send_data(RemoteCopyContext *context)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_CONNECTION_EXCEPTION),
-					errmsg("could not send COPY data"),
-					errdetail("%s", PQerrorMessage(pg_conn))));
+					 errmsg("could not send COPY data"),
+					 errdetail("%s", PQerrorMessage(pg_conn))));
 		}
 
 		/*
