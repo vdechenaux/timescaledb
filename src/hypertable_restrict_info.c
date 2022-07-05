@@ -628,6 +628,33 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 	hri->num_dimensions = 0;
 	for (int i = 0; i < old_dimensions; i++)
 	{
+		DimensionRestrictInfo *dri = hri->dimension_restriction[i];
+		switch (dri->dimension->type)
+		{
+			case DIMENSION_TYPE_OPEN:
+			{
+				DimensionRestrictInfoOpen *open = (DimensionRestrictInfoOpen *) dri;
+				fprintf(stderr,
+						"open %d lower strategy %d bound %ld upper strategy %d bound %ld\n",
+						dri->dimension->fd.id,
+						open->lower_strategy,
+						open->lower_bound,
+						open->upper_strategy,
+						open->upper_bound);
+				break;
+			}
+			default:
+			{
+				DimensionRestrictInfoClosed *closed = (DimensionRestrictInfoClosed *) dri;
+				fprintf(stderr,
+						"closed %d strategy %d values #%d\n",
+						dri->dimension->fd.id,
+						closed->strategy,
+						list_length(closed->partitions));
+				break;
+			}
+		}
+
 		if (!dimension_restrict_info_is_empty(hri->dimension_restriction[i]))
 		{
 			hri->dimension_restriction[hri->num_dimensions] = hri->dimension_restriction[i];
@@ -640,14 +667,29 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 	}
 
 	List *ids = NIL;
-	List *good_dimensions = gather_restriction_dimension_vectors(hri);
-	if (list_length(good_dimensions) == 0)
+	if (hri->num_dimensions == 0)
 	{
+		/*
+		 * No nontrivial restrictions on hyperspace. Just enumerate all the
+		 * chunks.
+		 */
 		ids = ts_chunk_get_chunk_ids_by_hypertable_id(ht->fd.id);
 	}
 	else
 	{
-		ids = ts_chunk_id_find_in_subspace(ht, good_dimensions, lockmode);
+		List *good_dimensions = gather_restriction_dimension_vectors(hri);
+		if (list_length(good_dimensions) == 0)
+		{
+			/*
+			 * No dimension slices match for some nontrivial dimension. This means
+			 * that no chunks match.
+			 */
+			ids = NIL;
+		}
+		else
+		{
+			ids = ts_chunk_id_find_in_subspace(ht, good_dimensions, lockmode);
+		}
 	}
 
 	List *chunks_new = NIL;
