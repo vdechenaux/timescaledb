@@ -98,11 +98,11 @@ dimension_restrict_info_is_empty(const DimensionRestrictInfo *dri)
 		case DIMENSION_TYPE_OPEN:
 		{
 			DimensionRestrictInfoOpen *open = (DimensionRestrictInfoOpen *) dri;
-			return open->lower_strategy == InvalidStrategy
-				&& open->upper_strategy == InvalidStrategy;
+			return open->lower_strategy == InvalidStrategy &&
+				   open->upper_strategy == InvalidStrategy;
 		}
 		case DIMENSION_TYPE_CLOSED:
-			return ((DimensionRestrictInfoClosed*) dri)->strategy == InvalidStrategy;
+			return ((DimensionRestrictInfoClosed *) dri)->strategy == InvalidStrategy;
 		default:
 			Assert(false);
 			return false;
@@ -630,8 +630,7 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 	{
 		if (!dimension_restrict_info_is_empty(hri->dimension_restriction[i]))
 		{
-			hri->dimension_restriction[hri->num_dimensions]
-				= hri->dimension_restriction[i];
+			hri->dimension_restriction[hri->num_dimensions] = hri->dimension_restriction[i];
 			hri->num_dimensions++;
 		}
 		else
@@ -654,8 +653,9 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 			for (int i = 0; i < *num_chunks; i++)
 			{
 				ids = lappend_int(ids,
-					ts_chunk_get_by_relid(list_nth_oid(chunk_oids, i),
-												  /* fail_if_not_found = */ true)->fd.id);
+								  ts_chunk_get_by_relid(list_nth_oid(chunk_oids, i),
+														/* fail_if_not_found = */ true)
+									  ->fd.id);
 			}
 		}
 	}

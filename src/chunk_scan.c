@@ -282,7 +282,8 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 		{
 			/* Lazy initialize the chunks array */
 			if (NULL == locked_chunks)
-				locked_chunks = MemoryContextAlloc(orig_mcxt, sizeof(Chunk *) * unlocked_chunk_count);
+				locked_chunks =
+					MemoryContextAlloc(orig_mcxt, sizeof(Chunk *) * unlocked_chunk_count);
 
 			locked_chunks[locked_chunk_count] = chunk;
 

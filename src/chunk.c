@@ -1539,8 +1539,8 @@ ts_chunk_id_find_in_subspace(Hypertable *ht, List *dimension_vecs, LOCKMODE lock
 	ChunkScanCtx ctx;
 	chunk_scan_ctx_init(&ctx, ht->space, /* point = */ NULL);
 
-	ScanIterator iterator = ts_scan_iterator_create(CHUNK_CONSTRAINT, AccessShareLock,
-		CurrentMemoryContext);
+	ScanIterator iterator =
+		ts_scan_iterator_create(CHUNK_CONSTRAINT, AccessShareLock, CurrentMemoryContext);
 	ListCell *lc;
 	foreach (lc, dimension_vecs)
 	{
@@ -1562,7 +1562,8 @@ ts_chunk_id_find_in_subspace(Hypertable *ht, List *dimension_vecs, LOCKMODE lock
 				Assert(current_chunk_id != 0);
 
 				bool found = false;
-				ChunkScanEntry *entry = hash_search(ctx.htab, &current_chunk_id, HASH_ENTER, &found);
+				ChunkScanEntry *entry =
+					hash_search(ctx.htab, &current_chunk_id, HASH_ENTER, &found);
 				if (!found)
 				{
 					entry->stub = NULL;
