@@ -637,7 +637,8 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 			{
 				DimensionRestrictInfoOpen *open = (DimensionRestrictInfoOpen *) dri;
 				fprintf(stderr,
-						"open %d lower strategy %d bound %" PRIu64 " upper strategy %d bound %" PRIu64 "\n",
+						"open %d lower strategy %d bound %" PRIu64
+						" upper strategy %d bound %" PRIu64 "\n",
 						dri->dimension->fd.id,
 						open->lower_strategy,
 						open->lower_bound,
