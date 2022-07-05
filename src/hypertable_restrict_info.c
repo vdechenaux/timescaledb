@@ -25,6 +25,8 @@
 #include "scan_iterator.h"
 #include "utils.h"
 
+#include <inttypes.h>
+
 typedef struct DimensionRestrictInfo
 {
 	const Dimension *dimension;
@@ -635,7 +637,7 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 			{
 				DimensionRestrictInfoOpen *open = (DimensionRestrictInfoOpen *) dri;
 				fprintf(stderr,
-						"open %d lower strategy %d bound %ld upper strategy %d bound %ld\n",
+						"open %d lower strategy %d bound %" PRIu64 " upper strategy %d bound %" PRIu64 "\n",
 						dri->dimension->fd.id,
 						open->lower_strategy,
 						open->lower_bound,
