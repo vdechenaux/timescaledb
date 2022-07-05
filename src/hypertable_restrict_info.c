@@ -26,6 +26,7 @@
 #include "utils.h"
 
 #include <inttypes.h>
+#include <tcop/tcopprot.h>
 
 typedef struct DimensionRestrictInfo
 {
@@ -621,6 +622,8 @@ Chunk **
 ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *ht,
 									   LOCKMODE lockmode, unsigned int *num_chunks)
 {
+	fprintf(stderr, "ht %d query '%s'\n", ht->fd.id, debug_query_string);
+
 	List *dimension_vecs = gather_restriction_dimension_vectors(hri);
 	Assert(hri->num_dimensions == ht->space->num_dimensions);
 	Chunk **result = ts_chunk_scan_by_constraints(ht->space, dimension_vecs, lockmode, num_chunks);
