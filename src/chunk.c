@@ -1525,6 +1525,78 @@ ts_chunk_create_for_point(const Hypertable *ht, const Point *p, const char *sche
 	return chunk;
 }
 
+/*
+ * Find the chunks that belong to the subspace identified by the given dimension
+ * vectors. We might be restricting only some dimensions, so this subspace is
+ * not a hypercube, but a hyperplane of some order.
+ * Returns a list of matching chunk ids.
+ */
+List *
+ts_chunk_id_find_in_subspace(Hypertable *ht, List *dimension_vecs, LOCKMODE lockmode)
+{
+	List *chunk_ids = NIL;
+
+	ChunkScanCtx ctx;
+	chunk_scan_ctx_init(&ctx, ht->space, /* point = */ NULL);
+
+	ScanIterator iterator = ts_scan_iterator_create(CHUNK_CONSTRAINT, AccessShareLock,
+		CurrentMemoryContext);
+	ListCell *lc;
+	foreach (lc, dimension_vecs)
+	{
+		const DimensionVec *vec = lfirst(lc);
+		for (int i = 0; i < vec->num_slices; i++)
+		{
+			const DimensionSlice *slice = vec->slices[i];
+
+			ts_chunk_constraint_scan_iterator_set_slice_id(&iterator, slice->fd.id);
+			ts_scan_iterator_start_or_restart_scan(&iterator);
+
+			while (ts_scan_iterator_next(&iterator) != NULL)
+			{
+				TupleInfo *ti = ts_scan_iterator_tuple_info(&iterator);
+				bool PG_USED_FOR_ASSERTS_ONLY isnull = true;
+				Datum datum = slot_getattr(ti->slot, Anum_chunk_constraint_chunk_id, &isnull);
+				Assert(!isnull);
+				int32 current_chunk_id = DatumGetInt32(datum);
+				Assert(current_chunk_id != 0);
+
+				bool found = false;
+				ChunkScanEntry *entry = hash_search(ctx.htab, &current_chunk_id, HASH_ENTER, &found);
+				if (!found)
+				{
+					entry->stub = NULL;
+					entry->num_dimension_constraints = 0;
+				}
+
+				/*
+				 * We have only the dimension constraints here, because we're searching
+				 * by dimension slice id.
+				 */
+				Assert(!slot_attisnull(ts_scan_iterator_slot(&iterator),
+									   Anum_chunk_constraint_dimension_slice_id));
+				entry->num_dimension_constraints++;
+
+				/*
+				 * A chunk is complete when we've found slices for all its dimensions,
+				 * i.e., a complete hypercube. Only one chunk matches a given hyperspace
+				 * point, so we can stop early.
+				 */
+				if (entry->num_dimension_constraints == list_length(dimension_vecs))
+				{
+					chunk_ids = lappend_int(chunk_ids, entry->chunk_id);
+				}
+			}
+		}
+	}
+
+	ts_scan_iterator_close(&iterator);
+
+	chunk_scan_ctx_destroy(&ctx);
+
+	return chunk_ids;
+}
+
 ChunkStub *
 ts_chunk_stub_create(int32 id, int16 num_constraints)
 {

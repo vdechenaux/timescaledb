@@ -896,6 +896,7 @@ find_children_chunks(HypertableRestrictInfo *hri, Hypertable *ht, LOCKMODE lockm
 
 		return chunks;
 	}
+
 	/*
 	 * Unlike find_all_inheritors we do not include parent because if there
 	 * are restrictions the parent table cannot fulfill them and since we do

@@ -4,23 +4,26 @@
  * LICENSE-APACHE for a copy of the license.
  */
 #include <postgres.h>
-#include <utils/typcache.h>
-#include <utils/lsyscache.h>
+
+#include <catalog/pg_inherits.h>
 #include <optimizer/optimizer.h>
 #include <parser/parsetree.h>
 #include <utils/array.h>
 #include <utils/builtins.h>
+#include <utils/lsyscache.h>
+#include <utils/typcache.h>
 
 #include "hypertable_restrict_info.h"
-#include "dimension.h"
-#include "utils.h"
-#include "dimension_slice.h"
+
 #include "chunk.h"
-#include "hypercube.h"
-#include "dimension_vector.h"
-#include "partitioning.h"
 #include "chunk_scan.h"
+#include "dimension.h"
+#include "dimension_slice.h"
+#include "dimension_vector.h"
+#include "hypercube.h"
+#include "partitioning.h"
 #include "scan_iterator.h"
+#include "utils.h"
 
 typedef struct DimensionRestrictInfo
 {
@@ -84,6 +87,25 @@ dimension_restrict_info_create(const Dimension *d)
 		default:
 			elog(ERROR, "unknown dimension type");
 			return NULL;
+	}
+}
+
+static bool
+dimension_restrict_info_is_empty(const DimensionRestrictInfo *dri)
+{
+	switch (dri->dimension->type)
+	{
+		case DIMENSION_TYPE_OPEN:
+		{
+			DimensionRestrictInfoOpen *open = (DimensionRestrictInfoOpen *) dri;
+			return open->lower_strategy == InvalidStrategy
+				&& open->upper_strategy == InvalidStrategy;
+		}
+		case DIMENSION_TYPE_CLOSED:
+			return ((DimensionRestrictInfoClosed*) dri)->strategy == InvalidStrategy;
+		default:
+			Assert(false);
+			return false;
 	}
 }
 
@@ -599,7 +621,66 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 {
 	List *dimension_vecs = gather_restriction_dimension_vectors(hri);
 	Assert(hri->num_dimensions == ht->space->num_dimensions);
-	return ts_chunk_scan_by_constraints(ht->space, dimension_vecs, lockmode, num_chunks);
+	Chunk **result = ts_chunk_scan_by_constraints(ht->space, dimension_vecs, lockmode, num_chunks);
+
+	const int old_dimensions = hri->num_dimensions;
+	hri->num_dimensions = 0;
+	for (int i = 0; i < old_dimensions; i++)
+	{
+		if (!dimension_restrict_info_is_empty(hri->dimension_restriction[i]))
+		{
+			hri->dimension_restriction[hri->num_dimensions]
+				= hri->dimension_restriction[i];
+			hri->num_dimensions++;
+		}
+		else
+		{
+			fprintf(stderr, "empty restriction for dimension #%d\n", i);
+		}
+	}
+
+	List *ids = NIL;
+	List *good_dimensions = gather_restriction_dimension_vectors(hri);
+	if (list_length(good_dimensions) == 0)
+	{
+		List *chunk_oids = find_inheritance_children(ht->main_table_relid, lockmode);
+		if (chunk_oids == NIL)
+		{
+			*num_chunks = 0;
+			return 0;
+		}
+
+		*num_chunks = list_length(chunk_oids);
+		for (int i = 0; i < *num_chunks; i++)
+		{
+			ids = lappend_int(ids,
+				ts_chunk_get_by_relid(list_nth_oid(chunk_oids, i),
+											  /* fail_if_not_found = */ true)->fd.id);
+		}
+	}
+	else
+	{
+		ids = ts_chunk_id_find_in_subspace(ht, good_dimensions, lockmode);
+	}
+
+	fprintf(stderr, "ids new: \n");
+	for (int i = 0; i < list_length(ids); i++)
+	{
+		fprintf(stderr, "%d, ", list_nth_int(ids, i));
+	}
+	fprintf(stderr, "\n");
+
+	fprintf(stderr, "ids old: \n");
+	for (int i = 0; i < *num_chunks; i++)
+	{
+		fprintf(stderr, "%d, ", result[i]->fd.id);
+		Assert(list_member_int(ids, result[i]->fd.id));
+	}
+	fprintf(stderr, "\n");
+
+	Assert(list_length(ids) == *num_chunks);
+
+	return result;
 }
 
 /*
