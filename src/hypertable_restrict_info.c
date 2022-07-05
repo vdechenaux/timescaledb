@@ -622,6 +622,7 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 	List *dimension_vecs = gather_restriction_dimension_vectors(hri);
 	Assert(hri->num_dimensions == ht->space->num_dimensions);
 	Chunk **result = ts_chunk_scan_by_constraints(ht->space, dimension_vecs, lockmode, num_chunks);
+	Assert(*num_chunks == 0 || result != NULL);
 
 	const int old_dimensions = hri->num_dimensions;
 	hri->num_dimensions = 0;
@@ -646,16 +647,16 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 		List *chunk_oids = find_inheritance_children(ht->main_table_relid, lockmode);
 		if (chunk_oids == NIL)
 		{
-			*num_chunks = 0;
-			return 0;
+			ids = NIL;
 		}
-
-		*num_chunks = list_length(chunk_oids);
-		for (int i = 0; i < *num_chunks; i++)
+		else
 		{
-			ids = lappend_int(ids,
-				ts_chunk_get_by_relid(list_nth_oid(chunk_oids, i),
-											  /* fail_if_not_found = */ true)->fd.id);
+			for (int i = 0; i < *num_chunks; i++)
+			{
+				ids = lappend_int(ids,
+					ts_chunk_get_by_relid(list_nth_oid(chunk_oids, i),
+												  /* fail_if_not_found = */ true)->fd.id);
+			}
 		}
 	}
 	else
@@ -663,10 +664,18 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 		ids = ts_chunk_id_find_in_subspace(ht, good_dimensions, lockmode);
 	}
 
-	fprintf(stderr, "ids new: \n");
+	List *chunks_new = NIL;
 	for (int i = 0; i < list_length(ids); i++)
 	{
-		fprintf(stderr, "%d, ", list_nth_int(ids, i));
+		Chunk *chunk = ts_chunk_get_by_id(list_nth_int(ids, i), false);
+		if (chunk)
+			chunks_new = lappend(chunks_new, chunk);
+	}
+
+	fprintf(stderr, "ids new: \n");
+	for (int i = 0; i < list_length(chunks_new); i++)
+	{
+		fprintf(stderr, "%d, ", ((Chunk *) list_nth(chunks_new, i))->fd.id);
 	}
 	fprintf(stderr, "\n");
 
@@ -678,7 +687,7 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 	}
 	fprintf(stderr, "\n");
 
-	Assert(list_length(ids) == *num_chunks);
+	Assert(list_length(chunks_new) == *num_chunks);
 
 	return result;
 }

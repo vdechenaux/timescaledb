@@ -148,9 +148,9 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	MemoryContext orig_mcxt;
 	ScanIterator constr_it;
 	ScanIterator chunk_it;
-	Chunk **chunks = NULL;
+	Chunk **locked_chunks = NULL;
 	Chunk **unlocked_chunks = NULL;
-	unsigned int chunk_count = 0;
+	unsigned int locked_chunk_count = 0;
 	unsigned int unlocked_chunk_count = 0;
 	List *chunk_stubs;
 	ListCell *lc;
@@ -179,9 +179,7 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 		MemoryContextSwitchTo(orig_mcxt);
 		MemoryContextDelete(work_mcxt);
 
-		if (numchunks)
-			*numchunks = 0;
-
+		*numchunks = 0;
 		return NULL;
 	}
 
@@ -260,8 +258,8 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 
 	ts_scan_iterator_close(&chunk_it);
 
-	Assert(chunks == NULL || chunk_count > 0);
-	Assert(chunk_count <= list_length(chunk_stubs));
+	Assert(unlocked_chunk_count == 0 || unlocked_chunks != NULL);
+	Assert(unlocked_chunk_count <= list_length(chunk_stubs));
 	Assert(CurrentMemoryContext == work_mcxt);
 
 	/*
@@ -283,15 +281,15 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 		if (ts_chunk_lock_if_exists(chunk->table_id, chunk_lockmode))
 		{
 			/* Lazy initialize the chunks array */
-			if (NULL == chunks)
-				chunks = MemoryContextAlloc(orig_mcxt, sizeof(Chunk *) * unlocked_chunk_count);
+			if (NULL == locked_chunks)
+				locked_chunks = MemoryContextAlloc(orig_mcxt, sizeof(Chunk *) * unlocked_chunk_count);
 
-			chunks[chunk_count] = chunk;
+			locked_chunks[locked_chunk_count] = chunk;
 
 			if (chunk->relkind == RELKIND_FOREIGN_TABLE)
 				remote_chunk_count++;
 
-			chunk_count++;
+			locked_chunk_count++;
 		}
 	}
 
@@ -301,7 +299,7 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	 * constraints.
 	 */
 
-	if (chunk_count > 0)
+	if (locked_chunk_count > 0)
 	{
 		/*
 		 * This chunk constraint scan uses a different index, so need to close
@@ -309,9 +307,9 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 		 */
 		ts_scan_iterator_close(&constr_it);
 
-		for (i = 0; i < chunk_count; i++)
+		for (i = 0; i < locked_chunk_count; i++)
 		{
-			Chunk *chunk = chunks[i];
+			Chunk *chunk = locked_chunks[i];
 			int num_constraints_hint = chunk->constraints->num_constraints;
 
 			chunk->constraints = ts_chunk_constraints_alloc(num_constraints_hint, orig_mcxt);
@@ -342,9 +340,9 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	{
 		ScanIterator data_node_it = ts_chunk_data_nodes_scan_iterator_create(orig_mcxt);
 
-		for (i = 0; i < chunk_count; i++)
+		for (i = 0; i < locked_chunk_count; i++)
 		{
-			Chunk *chunk = chunks[i];
+			Chunk *chunk = locked_chunks[i];
 
 			if (chunk->relkind == RELKIND_FOREIGN_TABLE)
 			{
@@ -386,19 +384,18 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 		ts_scan_iterator_close(&data_node_it);
 	}
 
-	if (numchunks)
-		*numchunks = chunk_count;
-
 	MemoryContextSwitchTo(orig_mcxt);
 	MemoryContextDelete(work_mcxt);
 
 #ifdef USE_ASSERT_CHECKING
 	/* Assert that we always return valid chunks */
-	for (i = 0; i < chunk_count; i++)
+	for (i = 0; i < locked_chunk_count; i++)
 	{
-		ASSERT_IS_VALID_CHUNK(chunks[i]);
+		ASSERT_IS_VALID_CHUNK(locked_chunks[i]);
 	}
 #endif
 
-	return chunks;
+	*numchunks = locked_chunk_count;
+	Assert(*numchunks == 0 || locked_chunks != NULL);
+	return locked_chunks;
 }
