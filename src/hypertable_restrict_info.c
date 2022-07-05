@@ -643,21 +643,7 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 	List *good_dimensions = gather_restriction_dimension_vectors(hri);
 	if (list_length(good_dimensions) == 0)
 	{
-		List *chunk_oids = find_inheritance_children(ht->main_table_relid, lockmode);
-		if (chunk_oids == NIL)
-		{
-			ids = NIL;
-		}
-		else
-		{
-			for (int i = 0; i < *num_chunks; i++)
-			{
-				ids = lappend_int(ids,
-								  ts_chunk_get_by_relid(list_nth_oid(chunk_oids, i),
-														/* fail_if_not_found = */ true)
-									  ->fd.id);
-			}
-		}
+		ids = ts_chunk_get_chunk_ids_by_hypertable_id(ht->fd.id);
 	}
 	else
 	{
