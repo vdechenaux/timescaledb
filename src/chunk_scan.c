@@ -139,20 +139,63 @@ scan_stubs_by_constraints(ScanIterator *constr_it, const Hyperspace *hs, const L
  */
 Chunk **
 ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
-							 LOCKMODE chunk_lockmode, unsigned int *numchunks)
+							 LOCKMODE chunk_lockmode, unsigned int *num_chunks)
+{
+	Assert(OidIsValid(hs->main_table_relid));
+
+	/*
+	 * Step 1: Scan for chunks that match in all the given dimensions. The
+	 * matching chunks are returned as chunk stubs as they are not yet full
+	 * chunks.
+	 */
+	MemoryContext work_mcxt =
+		AllocSetContextCreate(CurrentMemoryContext, "chunk-scan-work", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext per_tuple_mcxt =
+		AllocSetContextCreate(work_mcxt, "chunk-scan-per-tuple", ALLOCSET_SMALL_SIZES);
+	MemoryContext orig_mcxt = MemoryContextSwitchTo(work_mcxt);
+	ScanIterator constr_it = ts_chunk_constraint_scan_iterator_create(orig_mcxt);
+	List *chunk_stubs_old = scan_stubs_by_constraints(&constr_it, hs, dimension_vecs, per_tuple_mcxt);
+	ts_scan_iterator_close(&constr_it);
+	MemoryContextSwitchTo(orig_mcxt);
+
+	List *chunk_ids = NIL;
+	ListCell *lc;
+	foreach (lc, chunk_stubs_old)
+	{
+		ChunkStub *stub = lfirst(lc);
+		chunk_ids = lappend_int(chunk_ids, stub->id);
+	}
+
+	MemoryContextDelete(work_mcxt);
+
+	/*
+	 * If no chunks matched, return early.
+	 */
+	if (list_length(chunk_ids) == 0)
+	{
+
+		*num_chunks = 0;
+		return NULL;
+	}
+
+	Chunk **result = ts_chunk_scan_by_chunk_ids(hs, chunk_ids, chunk_lockmode, num_chunks);
+
+	return result;
+}
+
+Chunk **
+ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
+							 LOCKMODE chunk_lockmode, unsigned int *num_chunks)
 {
 	MemoryContext work_mcxt =
 		AllocSetContextCreate(CurrentMemoryContext, "chunk-scan-work", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext per_tuple_mcxt =
 		AllocSetContextCreate(work_mcxt, "chunk-scan-per-tuple", ALLOCSET_SMALL_SIZES);
 	MemoryContext orig_mcxt;
-	ScanIterator constr_it;
-	ScanIterator chunk_it;
 	Chunk **locked_chunks = NULL;
 	Chunk **unlocked_chunks = NULL;
 	unsigned int locked_chunk_count = 0;
 	unsigned int unlocked_chunk_count = 0;
-	List *chunk_stubs_old;
 	ListCell *lc;
 	int remote_chunk_count = 0;
 	int i = 0;
@@ -163,38 +206,10 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	orig_mcxt = MemoryContextSwitchTo(work_mcxt);
 
 	/*
-	 * Step 1: Scan for chunks that match in all the given dimensions. The
-	 * matching chunks are returned as chunk stubs as they are not yet full
-	 * chunks.
-	 */
-	constr_it = ts_chunk_constraint_scan_iterator_create(orig_mcxt);
-	chunk_stubs_old = scan_stubs_by_constraints(&constr_it, hs, dimension_vecs, per_tuple_mcxt);
-
-	List *chunk_ids = NIL;
-	foreach (lc, chunk_stubs_old)
-	{
-		ChunkStub *stub = lfirst(lc);
-		chunk_ids = lappend_int(chunk_ids, stub->id);
-	}
-
-	/*
-	 * If no chunks matched, return early.
-	 */
-	if (list_length(chunk_ids) == 0)
-	{
-		ts_scan_iterator_close(&constr_it);
-		MemoryContextSwitchTo(orig_mcxt);
-		MemoryContextDelete(work_mcxt);
-
-		*numchunks = 0;
-		return NULL;
-	}
-
-	/*
 	 * Step 2: For each matching chunk, fill in the metadata from the "chunk"
 	 * table. Make sure to filter out "dropped" chunks..
 	 */
-	chunk_it = ts_chunk_scan_iterator_create(orig_mcxt);
+	ScanIterator chunk_it = ts_chunk_scan_iterator_create(orig_mcxt);
 	unlocked_chunks = MemoryContextAlloc(work_mcxt, sizeof(Chunk *) * list_length(chunk_ids));
 
 	foreach (lc, chunk_ids)
@@ -302,14 +317,10 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	 * constraints. Scan the chunk constraints again to get all
 	 * constraints.
 	 */
-	ScanIterator slice_iterator = ts_dimension_slice_scan_iterator_create(NULL, orig_mcxt);
 	if (locked_chunk_count > 0)
 	{
-		/*
-		 * This chunk constraint scan uses a different index, so need to close
-		 * and restart the scan.
-		 */
-		ts_scan_iterator_close(&constr_it);
+		ScanIterator constr_it = ts_chunk_constraint_scan_iterator_create(orig_mcxt);
+		ScanIterator slice_iterator = ts_dimension_slice_scan_iterator_create(NULL, orig_mcxt);
 
 		for (i = 0; i < locked_chunk_count; i++)
 		{
@@ -329,10 +340,10 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 
 			chunk->cube = ts_hypercube_from_constraints(chunk->constraints, &slice_iterator);
 		}
+		ts_scan_iterator_close(&slice_iterator);
+		ts_scan_iterator_close(&constr_it);
 	}
-	ts_scan_iterator_close(&slice_iterator);
 
-	ts_scan_iterator_close(&constr_it);
 	Assert(CurrentMemoryContext == work_mcxt);
 
 	/*
@@ -400,7 +411,7 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	}
 #endif
 
-	*numchunks = locked_chunk_count;
-	Assert(*numchunks == 0 || locked_chunks != NULL);
+	*num_chunks = locked_chunk_count;
+	Assert(*num_chunks == 0 || locked_chunks != NULL);
 	return locked_chunks;
 }

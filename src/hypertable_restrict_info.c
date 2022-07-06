@@ -94,7 +94,7 @@ dimension_restrict_info_create(const Dimension *d)
 }
 
 static bool
-dimension_restrict_info_is_empty(const DimensionRestrictInfo *dri)
+dimension_restrict_info_is_trivial(const DimensionRestrictInfo *dri)
 {
 	switch (dri->dimension->type)
 	{
@@ -519,6 +519,10 @@ scan_and_append_slices(ScanIterator *it, int old_nkeys, DimensionVec **dv, bool 
 	return *dv;
 }
 
+/*
+ * FIXME why do we need dimension vectors? Just make a list of slices, this will
+ * let us use the exact same code from chunk_point_find.
+ */
 static List *
 gather_restriction_dimension_vectors(const HypertableRestrictInfo *hri)
 {
@@ -557,36 +561,24 @@ gather_restriction_dimension_vectors(const HypertableRestrictInfo *hri)
 				const DimensionRestrictInfoClosed *closed =
 					(const DimensionRestrictInfoClosed *) dri;
 
-				if (closed->strategy == BTEqualStrategyNumber)
+				/* Shouldn't have trivial restriction infos here. */
+				Assert(closed->strategy == BTEqualStrategyNumber);
+
+				ListCell *cell;
+				foreach (cell, closed->partitions)
 				{
+					int32 partition = lfirst_int(cell);
+
 					/* slice_end >= value && slice_start <= value */
-					ListCell *cell;
-
-					foreach (cell, closed->partitions)
-					{
-						int32 partition = lfirst_int(cell);
-
-						ts_dimension_slice_scan_iterator_set_range(&it,
-																   dri->dimension->fd.id,
-																   BTLessEqualStrategyNumber,
-																   partition,
-																   BTGreaterEqualStrategyNumber,
-																   partition);
-
-						dv = scan_and_append_slices(&it, old_nkeys, &dv, true);
-					}
-				}
-				else
-				{
 					ts_dimension_slice_scan_iterator_set_range(&it,
 															   dri->dimension->fd.id,
-															   InvalidStrategy,
-															   -1,
-															   InvalidStrategy,
-															   -1);
-					dv = scan_and_append_slices(&it, old_nkeys, &dv, false);
-				}
+															   BTLessEqualStrategyNumber,
+															   partition,
+															   BTGreaterEqualStrategyNumber,
+															   partition);
 
+					dv = scan_and_append_slices(&it, old_nkeys, &dv, true);
+				}
 				break;
 			}
 			default:
@@ -622,67 +614,37 @@ Chunk **
 ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *ht,
 									   LOCKMODE lockmode, unsigned int *num_chunks)
 {
-	fprintf(stderr, "ht %d query '%s'\n", ht->fd.id, debug_query_string);
-
-	List *dimension_vecs = gather_restriction_dimension_vectors(hri);
-	Assert(hri->num_dimensions == ht->space->num_dimensions);
-	Chunk **result = ts_chunk_scan_by_constraints(ht->space, dimension_vecs, lockmode, num_chunks);
-	Assert(*num_chunks == 0 || result != NULL);
-
+	/*
+	 * Filter out the dimensions for which we don't have a nontrivial
+	 * restriction.
+	 */
 	const int old_dimensions = hri->num_dimensions;
 	hri->num_dimensions = 0;
 	for (int i = 0; i < old_dimensions; i++)
 	{
 		DimensionRestrictInfo *dri = hri->dimension_restriction[i];
-		switch (dri->dimension->type)
+		if (!dimension_restrict_info_is_trivial(dri))
 		{
-			case DIMENSION_TYPE_OPEN:
-			{
-				DimensionRestrictInfoOpen *open = (DimensionRestrictInfoOpen *) dri;
-				fprintf(stderr,
-						"open %d lower strategy %d bound %" PRIu64
-						" upper strategy %d bound %" PRIu64 "\n",
-						dri->dimension->fd.id,
-						open->lower_strategy,
-						open->lower_bound,
-						open->upper_strategy,
-						open->upper_bound);
-				break;
-			}
-			default:
-			{
-				DimensionRestrictInfoClosed *closed = (DimensionRestrictInfoClosed *) dri;
-				fprintf(stderr,
-						"closed %d strategy %d values #%d\n",
-						dri->dimension->fd.id,
-						closed->strategy,
-						list_length(closed->partitions));
-				break;
-			}
-		}
-
-		if (!dimension_restrict_info_is_empty(hri->dimension_restriction[i]))
-		{
-			hri->dimension_restriction[hri->num_dimensions] = hri->dimension_restriction[i];
+			hri->dimension_restriction[hri->num_dimensions] = dri;
 			hri->num_dimensions++;
-		}
-		else
-		{
-			fprintf(stderr, "empty restriction for dimension #%d\n", i);
 		}
 	}
 
-	List *ids = NIL;
+	List *chunk_ids = NIL;
 	if (hri->num_dimensions == 0)
 	{
 		/*
 		 * No nontrivial restrictions on hyperspace. Just enumerate all the
 		 * chunks.
 		 */
-		ids = ts_chunk_get_chunk_ids_by_hypertable_id(ht->fd.id);
+		chunk_ids = ts_chunk_get_chunk_ids_by_hypertable_id(ht->fd.id);
 	}
 	else
 	{
+		/*
+		 * Have some nontrivial restrictions, enumerate the matching dimension
+		 * slices.
+		 */
 		List *good_dimensions = gather_restriction_dimension_vectors(hri);
 		if (list_length(good_dimensions) == 0)
 		{
@@ -690,40 +652,16 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 			 * No dimension slices match for some nontrivial dimension. This means
 			 * that no chunks match.
 			 */
-			ids = NIL;
+			chunk_ids = NIL;
 		}
 		else
 		{
-			ids = ts_chunk_id_find_in_subspace(ht, good_dimensions, lockmode);
+			/* Find the chunks matching these dimension slices. */
+			chunk_ids = ts_chunk_id_find_in_subspace(ht, good_dimensions, lockmode);
 		}
 	}
 
-	List *chunks_new = NIL;
-	for (int i = 0; i < list_length(ids); i++)
-	{
-		Chunk *chunk = ts_chunk_get_by_id(list_nth_int(ids, i), false);
-		if (chunk)
-			chunks_new = lappend(chunks_new, chunk);
-	}
-
-	fprintf(stderr, "ids new: \n");
-	for (int i = 0; i < list_length(chunks_new); i++)
-	{
-		fprintf(stderr, "%d, ", ((Chunk *) list_nth(chunks_new, i))->fd.id);
-	}
-	fprintf(stderr, "\n");
-
-	fprintf(stderr, "ids old: \n");
-	for (int i = 0; i < *num_chunks; i++)
-	{
-		fprintf(stderr, "%d, ", result[i]->fd.id);
-		Assert(list_member_int(ids, result[i]->fd.id));
-	}
-	fprintf(stderr, "\n");
-
-	Assert(list_length(chunks_new) == *num_chunks);
-
-	return result;
+	return ts_chunk_scan_by_chunk_ids(ht->space, chunk_ids, lockmode, num_chunks);
 }
 
 /*
