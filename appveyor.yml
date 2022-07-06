@@ -143,9 +143,11 @@ build_script:
 
     Get-Content "C:\Program Files\postgresql\12\data\pg_hba.conf"
 
-    cmake --build ./build --config Debug -DASSERTIONS=ON
+    cmake -DASSERTIONS=ON ./build
 
-    cmake --build ./build --config Debug -DASSERTIONS=ON --target install
+    cmake --build ./build --config Debug
+
+    cmake --build ./build --config Debug --target install
 
     # postgres should restart
 
