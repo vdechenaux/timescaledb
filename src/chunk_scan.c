@@ -152,7 +152,7 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	Chunk **unlocked_chunks = NULL;
 	unsigned int locked_chunk_count = 0;
 	unsigned int unlocked_chunk_count = 0;
-	List *chunk_stubs;
+	List *chunk_stubs_old;
 	ListCell *lc;
 	int remote_chunk_count = 0;
 	int i = 0;
@@ -168,12 +168,19 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	 * chunks.
 	 */
 	constr_it = ts_chunk_constraint_scan_iterator_create(orig_mcxt);
-	chunk_stubs = scan_stubs_by_constraints(&constr_it, hs, dimension_vecs, per_tuple_mcxt);
+	chunk_stubs_old = scan_stubs_by_constraints(&constr_it, hs, dimension_vecs, per_tuple_mcxt);
+
+	List *chunk_ids = NIL;
+	foreach (lc, chunk_stubs_old)
+	{
+		ChunkStub *stub = lfirst(lc);
+		chunk_ids = lappend_int(chunk_ids, stub->id);
+	}
 
 	/*
 	 * If no chunks matched, return early.
 	 */
-	if (list_length(chunk_stubs) == 0)
+	if (list_length(chunk_ids) == 0)
 	{
 		ts_scan_iterator_close(&constr_it);
 		MemoryContextSwitchTo(orig_mcxt);
@@ -188,17 +195,16 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	 * table. Make sure to filter out "dropped" chunks..
 	 */
 	chunk_it = ts_chunk_scan_iterator_create(orig_mcxt);
-	unlocked_chunks = MemoryContextAlloc(work_mcxt, sizeof(Chunk *) * list_length(chunk_stubs));
+	unlocked_chunks = MemoryContextAlloc(work_mcxt, sizeof(Chunk *) * list_length(chunk_ids));
 
-	foreach (lc, chunk_stubs)
+	foreach (lc, chunk_ids)
 	{
-		const ChunkStub *stub = lfirst(lc);
+		int chunk_id = lfirst_int(lc);
 		TupleInfo *ti;
 
 		Assert(CurrentMemoryContext == work_mcxt);
-		Assert(chunk_stub_is_complete(stub, hs));
 
-		ts_chunk_scan_iterator_set_chunk_id(&chunk_it, stub->id);
+		ts_chunk_scan_iterator_set_chunk_id(&chunk_it, chunk_id);
 		ts_scan_iterator_start_or_restart_scan(&chunk_it);
 		ti = ts_scan_iterator_next(&chunk_it);
 
@@ -219,15 +225,12 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 
 				chunk = MemoryContextAllocZero(ti->mctx, sizeof(Chunk));
 
-				/* The stub constraints only contain dimensional
-				 * constraints. Use them for now and scan for other
-				 * constraints in the next step below. */
-				chunk->constraints = stub->constraints;
+				chunk->constraints = NULL;
 
 				/* Copy the hypercube into the result memory context */
 				old_mcxt = MemoryContextSwitchTo(ti->mctx);
 				ts_chunk_formdata_fill(&chunk->fd, ti);
-				chunk->cube = ts_hypercube_copy(stub->cube);
+				chunk->cube = NULL;
 				MemoryContextSwitchTo(old_mcxt);
 
 				schema_oid = get_namespace_oid(NameStr(chunk->fd.schema_name), false);
@@ -259,7 +262,7 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	ts_scan_iterator_close(&chunk_it);
 
 	Assert(unlocked_chunk_count == 0 || unlocked_chunks != NULL);
-	Assert(unlocked_chunk_count <= list_length(chunk_stubs));
+	Assert(unlocked_chunk_count <= list_length(chunk_ids));
 	Assert(CurrentMemoryContext == work_mcxt);
 
 	/*
@@ -299,7 +302,7 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	 * constraints. Scan the chunk constraints again to get all
 	 * constraints.
 	 */
-
+	ScanIterator slice_iterator = ts_dimension_slice_scan_iterator_create(NULL, orig_mcxt);
 	if (locked_chunk_count > 0)
 	{
 		/*
@@ -311,9 +314,7 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 		for (i = 0; i < locked_chunk_count; i++)
 		{
 			Chunk *chunk = locked_chunks[i];
-			int num_constraints_hint = chunk->constraints->num_constraints;
-
-			chunk->constraints = ts_chunk_constraints_alloc(num_constraints_hint, orig_mcxt);
+			chunk->constraints = ts_chunk_constraints_alloc(/* size_hint = */ 0, orig_mcxt);
 
 			ts_chunk_constraint_scan_iterator_set_chunk_id(&constr_it, chunk->fd.id);
 			ts_scan_iterator_start_or_restart_scan(&constr_it);
@@ -325,8 +326,11 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 				ts_chunk_constraints_add_from_tuple(chunk->constraints, constr_ti);
 				MemoryContextSwitchTo(work_mcxt);
 			}
+
+			chunk->cube = ts_hypercube_from_constraints(chunk->constraints, &slice_iterator);
 		}
 	}
+	ts_scan_iterator_close(&slice_iterator);
 
 	ts_scan_iterator_close(&constr_it);
 	Assert(CurrentMemoryContext == work_mcxt);

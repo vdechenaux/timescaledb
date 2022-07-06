@@ -5,6 +5,7 @@ services:
   - docker
 build_script:
 - ps: >-
+    Set-PSDebug -Trace 1
 
     # Create directories for tablespaces
 
@@ -143,11 +144,19 @@ build_script:
 
     Get-Content "C:\Program Files\postgresql\12\data\pg_hba.conf"
 
+    echo "!!1"
+
     cmake -DASSERTIONS=ON ./build
 
-    cmake --build ./build --config Debug
+    echo "!!2"
 
-    cmake --build ./build --config Debug --target install
+    cmake --build ./build
+
+    echo "!!3"
+
+    cmake --build ./build --target install
+
+    echo "!!3"
 
     # postgres should restart
 
