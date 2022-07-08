@@ -154,7 +154,8 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 		AllocSetContextCreate(work_mcxt, "chunk-scan-per-tuple", ALLOCSET_SMALL_SIZES);
 	MemoryContext orig_mcxt = MemoryContextSwitchTo(work_mcxt);
 	ScanIterator constr_it = ts_chunk_constraint_scan_iterator_create(orig_mcxt);
-	List *chunk_stubs_old = scan_stubs_by_constraints(&constr_it, hs, dimension_vecs, per_tuple_mcxt);
+	List *chunk_stubs_old =
+		scan_stubs_by_constraints(&constr_it, hs, dimension_vecs, per_tuple_mcxt);
 	ts_scan_iterator_close(&constr_it);
 	MemoryContextSwitchTo(orig_mcxt);
 
@@ -173,10 +174,16 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	 */
 	if (list_length(chunk_ids) == 0)
 	{
-
 		*num_chunks = 0;
 		return NULL;
 	}
+
+	/*
+	 * Sort the ids. This reduces the possibility of deadlocks when locking
+	 * the chunks, and also gives more favorable (closer to sequential) data
+	 * access patterns to our catalog tables and indexes.
+	 */
+	list_sort(chunk_ids, list_int_cmp);
 
 	Chunk **result = ts_chunk_scan_by_chunk_ids(hs, chunk_ids, chunk_lockmode, num_chunks);
 
@@ -184,8 +191,8 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 }
 
 Chunk **
-ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
-							 LOCKMODE chunk_lockmode, unsigned int *num_chunks)
+ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE chunk_lockmode,
+						   unsigned int *num_chunks)
 {
 	MemoryContext work_mcxt =
 		AllocSetContextCreate(CurrentMemoryContext, "chunk-scan-work", ALLOCSET_DEFAULT_SIZES);
@@ -199,19 +206,17 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
 	ListCell *lc;
 	int remote_chunk_count = 0;
 	int i = 0;
-	bool chunk_sort_needed = false;
 	Oid prev_chunk_oid = InvalidOid;
 
 	Assert(OidIsValid(hs->main_table_relid));
 	orig_mcxt = MemoryContextSwitchTo(work_mcxt);
 
 	/*
-	 * Step 2: For each matching chunk, fill in the metadata from the "chunk"
-	 * table. Make sure to filter out "dropped" chunks..
+	 * Step 1: For each matching chunk, fill in the metadata from the "chunk"
+	 * table. Make sure to filter out "dropped" chunks.
 	 */
 	ScanIterator chunk_it = ts_chunk_scan_iterator_create(orig_mcxt);
 	unlocked_chunks = MemoryContextAlloc(work_mcxt, sizeof(Chunk *) * list_length(chunk_ids));
-
 	foreach (lc, chunk_ids)
 	{
 		int chunk_id = lfirst_int(lc);
@@ -256,15 +261,6 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
 				unlocked_chunks[unlocked_chunk_count] = chunk;
 				unlocked_chunk_count++;
 
-				/*
-				 * Try to detect when sorting is needed for locking
-				 * purposes. Sometimes, the chunk order resulting from
-				 * scanning will align with the Oid order and no locking is
-				 * needed.
-				 */
-				if (OidIsValid(prev_chunk_oid) && prev_chunk_oid > chunk->table_id)
-					chunk_sort_needed = true;
-
 				prev_chunk_oid = chunk->table_id;
 			}
 
@@ -279,16 +275,6 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
 	Assert(unlocked_chunk_count == 0 || unlocked_chunks != NULL);
 	Assert(unlocked_chunk_count <= list_length(chunk_ids));
 	Assert(CurrentMemoryContext == work_mcxt);
-
-	/*
-	 * Lock chunks in Oid order in order to avoid deadlocks. Since we
-	 * sometimes fall back to PG find_inheritance_children() for hypertable
-	 * expansion, we must lock in the same order as in that function to be
-	 * consistent. Make sure to ignore the chunks that were concurrently
-	 * dropped before we could get a lock.
-	 */
-	if (unlocked_chunk_count > 1 && chunk_sort_needed)
-		qsort(unlocked_chunks, unlocked_chunk_count, sizeof(Chunk *), ts_chunk_oid_cmp);
 
 	DEBUG_WAITPOINT("expanded_chunks");
 
@@ -313,36 +299,76 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
 	}
 
 	/*
-	 * Step 3: The chunk stub scan only contained dimensional
+	 * Step 2: The chunk stub scan only contained dimensional
 	 * constraints. Scan the chunk constraints again to get all
 	 * constraints.
 	 */
-	if (locked_chunk_count > 0)
+	ScanIterator constr_it = ts_chunk_constraint_scan_iterator_create(orig_mcxt);
+
+	for (i = 0; i < locked_chunk_count; i++)
 	{
-		ScanIterator constr_it = ts_chunk_constraint_scan_iterator_create(orig_mcxt);
-		ScanIterator slice_iterator = ts_dimension_slice_scan_iterator_create(NULL, orig_mcxt);
+		Chunk *chunk = locked_chunks[i];
+		chunk->constraints = ts_chunk_constraints_alloc(/* size_hint = */ 0, orig_mcxt);
 
-		for (i = 0; i < locked_chunk_count; i++)
+		ts_chunk_constraint_scan_iterator_set_chunk_id(&constr_it, chunk->fd.id);
+		ts_scan_iterator_start_or_restart_scan(&constr_it);
+
+		while (ts_scan_iterator_next(&constr_it) != NULL)
 		{
-			Chunk *chunk = locked_chunks[i];
-			chunk->constraints = ts_chunk_constraints_alloc(/* size_hint = */ 0, orig_mcxt);
+			TupleInfo *constr_ti = ts_scan_iterator_tuple_info(&constr_it);
+			MemoryContextSwitchTo(per_tuple_mcxt);
+			ts_chunk_constraints_add_from_tuple(chunk->constraints, constr_ti);
+			MemoryContextSwitchTo(work_mcxt);
+		}
+	}
+	ts_scan_iterator_close(&constr_it);
 
-			ts_chunk_constraint_scan_iterator_set_chunk_id(&constr_it, chunk->fd.id);
-			ts_scan_iterator_start_or_restart_scan(&constr_it);
-
-			while (ts_scan_iterator_next(&constr_it) != NULL)
+	/*
+	 * Step 3: Build hypercube for the chunks by finding and combining the
+	 * dimension slices that match the chunk constraints.
+	 */
+	struct DimensionSlice_hash *dimension_slices =
+		DimensionSlice_create(work_mcxt,
+							  /* nelements = */ locked_chunk_count,
+							  /* private_data = */ NULL);
+	ScanIterator slice_iterator = ts_dimension_slice_scan_iterator_create(NULL, orig_mcxt);
+	for (int chunk_index = 0; chunk_index < locked_chunk_count; chunk_index++)
+	{
+		Chunk *chunk = locked_chunks[chunk_index];
+		ChunkConstraints *constraints = chunk->constraints;
+		MemoryContextSwitchTo(orig_mcxt);
+		Hypercube *cube = ts_hypercube_alloc(constraints->num_dimension_constraints);
+		MemoryContextSwitchTo(work_mcxt);
+		for (int constraint_index = 0; constraint_index < constraints->num_constraints;
+			 constraint_index++)
+		{
+			ChunkConstraint *constraint = &constraints->constraints[constraint_index];
+			if (!is_dimension_constraint(constraint))
 			{
-				TupleInfo *constr_ti = ts_scan_iterator_tuple_info(&constr_it);
-				MemoryContextSwitchTo(per_tuple_mcxt);
-				ts_chunk_constraints_add_from_tuple(chunk->constraints, constr_ti);
-				MemoryContextSwitchTo(work_mcxt);
+				continue;
 			}
 
-			chunk->cube = ts_hypercube_from_constraints(chunk->constraints, &slice_iterator);
+			const int slice_id = constraint->fd.dimension_slice_id;
+			DimensionSlice *slice_ptr =
+				ts_dimension_slice_scan_iterator_get_by_id(&slice_iterator, slice_id, NULL);
+			if (slice_ptr == NULL)
+			{
+				elog(ERROR, "dimension slice %d is not found", slice_id);
+			}
+			entry->slice = *slice_ptr;
+			MemoryContextSwitchTo(orig_mcxt);
+			DimensionSlice *slice_copy = ts_dimension_slice_create(slice_ptr->fd.dimension_id,
+																   slice_ptr->fd.range_start,
+																   slice_ptr->fd.range_end);
+			MemoryContextSwitchTo(work_mcxt);
+			Assert(cube->capacity > cube->num_slices);
+			cube->slices[cube->num_slices++] = slice_copy;
 		}
-		ts_scan_iterator_close(&slice_iterator);
-		ts_scan_iterator_close(&constr_it);
+		ts_hypercube_slice_sort(cube);
+		chunk->cube = cube;
 	}
+	ts_scan_iterator_close(&slice_iterator);
+	DimensionSlice_destroy(dimension_slices);
 
 	Assert(CurrentMemoryContext == work_mcxt);
 
