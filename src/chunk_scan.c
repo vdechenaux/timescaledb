@@ -183,7 +183,7 @@ ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
 	 * the chunks, and also gives more favorable (closer to sequential) data
 	 * access patterns to our catalog tables and indexes.
 	 */
-	chunk_ids = list_sort_compat(chunk_ids, list_int_cmp);
+	chunk_ids = list_sort_compat(chunk_ids, list_int_cmp_compat);
 
 	return ts_chunk_scan_by_chunk_ids(hs, chunk_ids, chunk_lockmode, num_chunks);
 }

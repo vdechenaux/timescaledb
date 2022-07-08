@@ -550,11 +550,8 @@ get_reindex_options(ReindexStmt *stmt)
  * List sorting functions are different in PG before 13.
  */
 #if PG14_LT
-/*
- * list_sort comparator for sorting a list into ascending int order.
- */
 inline static int
-list_int_cmp(const ListCell *p1, const ListCell *p2)
+list_int_cmp_compat(const ListCell *p1, const ListCell *p2)
 {
 	int			v1 = lfirst_int(p1);
 	int			v2 = lfirst_int(p2);
@@ -565,6 +562,21 @@ list_int_cmp(const ListCell *p1, const ListCell *p2)
 		return 1;
 	return 0;
 }
+#elif PG13_LT
+inline static int
+list_int_cmp_compat(const void *p1, const void *p2)
+{
+	int			v1 = *((int *) p1);
+	int			v2 = *((int *) p2);
+
+	if (v1 < v2)
+		return -1;
+	if (v1 > v2)
+		return 1;
+	return 0;
+}
+#else
+#define list_int_cmp_compat list_int_cmp
 #endif
 
 #if PG13_LT
