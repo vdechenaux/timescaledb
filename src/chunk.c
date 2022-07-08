@@ -1579,9 +1579,8 @@ ts_chunk_id_find_in_subspace(Hypertable *ht, List *dimension_vecs, LOCKMODE lock
 				entry->num_dimension_constraints++;
 
 				/*
-				 * A chunk is complete when we've found slices for all its dimensions,
-				 * i.e., a complete hypercube. Only one chunk matches a given hyperspace
-				 * point, so we can stop early.
+				 * A chunk is complete when we've found slices for all required dimensions,
+				 * i.e., a complete subspace.
 				 */
 				if (entry->num_dimension_constraints == list_length(dimension_vecs))
 				{
