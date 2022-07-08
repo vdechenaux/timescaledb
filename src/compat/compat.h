@@ -549,9 +549,9 @@ get_reindex_options(ReindexStmt *stmt)
 #endif
 
 /*
- * List sorting function is different in PG before 13.
+ * List sorting functions are different in PG before 13.
  */
-#if PG13_LT
+#if PG14_LT
 /*
  * list_sort comparator for sorting a list into ascending int order.
  */
@@ -567,7 +567,9 @@ list_int_cmp(const ListCell *p1, const ListCell *p2)
 		return 1;
 	return 0;
 }
+#endif
 
+#if PG13_LT
 #define list_sort_compat(list, comparator) list_qsort((list), (comparator))
 #else
 #define list_sort_compat(list, comparator) (list_sort((list), (comparator)), (list))
