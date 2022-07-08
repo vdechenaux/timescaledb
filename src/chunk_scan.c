@@ -327,10 +327,6 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	 * Step 3: Build hypercube for the chunks by finding and combining the
 	 * dimension slices that match the chunk constraints.
 	 */
-	struct DimensionSlice_hash *dimension_slices =
-		DimensionSlice_create(work_mcxt,
-							  /* nelements = */ locked_chunk_count,
-							  /* private_data = */ NULL);
 	ScanIterator slice_iterator = ts_dimension_slice_scan_iterator_create(NULL, orig_mcxt);
 	for (int chunk_index = 0; chunk_index < locked_chunk_count; chunk_index++)
 	{
@@ -348,14 +344,19 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 				continue;
 			}
 
+			/*
+			 * Find the slice by id. Don't have to lock it because the chunk is
+			 * locked.
+			 */
 			const int slice_id = constraint->fd.dimension_slice_id;
 			DimensionSlice *slice_ptr =
-				ts_dimension_slice_scan_iterator_get_by_id(&slice_iterator, slice_id, NULL);
+				ts_dimension_slice_scan_iterator_get_by_id(&slice_iterator,
+														   slice_id,
+														   /* tuplock = */ NULL);
 			if (slice_ptr == NULL)
 			{
 				elog(ERROR, "dimension slice %d is not found", slice_id);
 			}
-			entry->slice = *slice_ptr;
 			MemoryContextSwitchTo(orig_mcxt);
 			DimensionSlice *slice_copy = ts_dimension_slice_create(slice_ptr->fd.dimension_id,
 																   slice_ptr->fd.range_start,
@@ -368,7 +369,6 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 		chunk->cube = cube;
 	}
 	ts_scan_iterator_close(&slice_iterator);
-	DimensionSlice_destroy(dimension_slices);
 
 	Assert(CurrentMemoryContext == work_mcxt);
 
