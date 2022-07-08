@@ -547,3 +547,28 @@ get_reindex_options(ReindexStmt *stmt)
 #define F_TIMESTAMPTZ_GE F_TIMESTAMP_GE
 #define F_TIMESTAMPTZ_GT F_TIMESTAMP_GT
 #endif
+
+/*
+ * List sorting function is different in PG before 13.
+ */
+#if PG13_LT
+/*
+ * list_sort comparator for sorting a list into ascending int order.
+ */
+inline static int
+list_int_cmp(const ListCell *p1, const ListCell *p2)
+{
+	int			v1 = lfirst_int(p1);
+	int			v2 = lfirst_int(p2);
+
+	if (v1 < v2)
+		return -1;
+	if (v1 > v2)
+		return 1;
+	return 0;
+}
+
+#define list_sort_compat(list, comparator) list_qsort((list), (comparator))
+#else
+#define list_sort_compat(list, comparator) (list_sort((list), (comparator)), (list))
+#endif
