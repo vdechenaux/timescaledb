@@ -203,7 +203,6 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	unsigned int unlocked_chunk_count = 0;
 	ListCell *lc;
 	int remote_chunk_count = 0;
-	int i = 0;
 
 	Assert(OidIsValid(hs->main_table_relid));
 	orig_mcxt = MemoryContextSwitchTo(work_mcxt);
@@ -236,25 +235,16 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 
 			if (!is_dropped)
 			{
-				Chunk *chunk;
-				MemoryContext old_mcxt;
-				Oid schema_oid;
+				Chunk *chunk = MemoryContextAllocZero(ti->mctx, sizeof(Chunk));
 
-				chunk = MemoryContextAllocZero(ti->mctx, sizeof(Chunk));
-
-				chunk->constraints = NULL;
-
-				/* Copy the hypercube into the result memory context */
-				old_mcxt = MemoryContextSwitchTo(ti->mctx);
+				MemoryContext old_mcxt = MemoryContextSwitchTo(ti->mctx);
 				ts_chunk_formdata_fill(&chunk->fd, ti);
-				chunk->cube = NULL;
 				MemoryContextSwitchTo(old_mcxt);
 
-				schema_oid = get_namespace_oid(NameStr(chunk->fd.schema_name), false);
-				chunk->table_id = get_relname_relid(NameStr(chunk->fd.table_name), schema_oid);
+				chunk->constraints = NULL;
+				chunk->cube = NULL;
 				chunk->hypertable_relid = hs->main_table_relid;
-				chunk->relkind = get_rel_relkind(chunk->table_id);
-				Assert(OidIsValid(chunk->table_id));
+
 				unlocked_chunks[unlocked_chunk_count] = chunk;
 				unlocked_chunk_count++;
 			}
@@ -273,7 +263,25 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 
 	DEBUG_WAITPOINT("expanded_chunks");
 
-	for (i = 0; i < unlocked_chunk_count; i++)
+	/*
+	 * Batch the lookups to each catalog cache to have more favorable access
+	 * patterns.
+	 */
+	for (int i = 0; i < unlocked_chunk_count; i++)
+	{
+		Chunk *chunk = unlocked_chunks[i];
+		Oid schema_oid = get_namespace_oid(NameStr(chunk->fd.schema_name), false);
+		chunk->table_id = get_relname_relid(NameStr(chunk->fd.table_name), schema_oid);
+		Assert(OidIsValid(chunk->table_id));
+	}
+
+	for (int i = 0; i < unlocked_chunk_count; i++)
+	{
+		Chunk *chunk = unlocked_chunks[i];
+		chunk->relkind = get_rel_relkind(chunk->table_id);
+	}
+
+	for (int i = 0; i < unlocked_chunk_count; i++)
 	{
 		Chunk *chunk = unlocked_chunks[i];
 
@@ -300,7 +308,7 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	 */
 	ScanIterator constr_it = ts_chunk_constraint_scan_iterator_create(orig_mcxt);
 
-	for (i = 0; i < locked_chunk_count; i++)
+	for (int i = 0; i < locked_chunk_count; i++)
 	{
 		Chunk *chunk = locked_chunks[i];
 		chunk->constraints = ts_chunk_constraints_alloc(/* size_hint = */ 0, orig_mcxt);
@@ -377,7 +385,7 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	{
 		ScanIterator data_node_it = ts_chunk_data_nodes_scan_iterator_create(orig_mcxt);
 
-		for (i = 0; i < locked_chunk_count; i++)
+		for (int i = 0; i < locked_chunk_count; i++)
 		{
 			Chunk *chunk = locked_chunks[i];
 
@@ -426,7 +434,7 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 
 #ifdef USE_ASSERT_CHECKING
 	/* Assert that we always return valid chunks */
-	for (i = 0; i < locked_chunk_count; i++)
+	for (int i = 0; i < locked_chunk_count; i++)
 	{
 		ASSERT_IS_VALID_CHUNK(locked_chunks[i]);
 	}
