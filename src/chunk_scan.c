@@ -204,7 +204,6 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	ListCell *lc;
 	int remote_chunk_count = 0;
 	int i = 0;
-	Oid prev_chunk_oid = InvalidOid;
 
 	Assert(OidIsValid(hs->main_table_relid));
 	orig_mcxt = MemoryContextSwitchTo(work_mcxt);

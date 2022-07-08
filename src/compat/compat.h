@@ -535,8 +535,6 @@ get_reindex_options(ReindexStmt *stmt)
 	make_new_heap(tableOid, tableSpace, relpersistence, ExclusiveLock)
 #endif
 
-#endif /* TIMESCALEDB_COMPAT_H */
-
 /*
  * PostgreSQL < 14 does not have F_TIMESTAMPTZ_GT macro but instead has
  * the oid of that function as F_TIMESTAMP_GT even though the signature
@@ -574,3 +572,5 @@ list_int_cmp(const ListCell *p1, const ListCell *p2)
 #else
 #define list_sort_compat(list, comparator) (list_sort((list), (comparator)), (list))
 #endif
+
+#endif /* TIMESCALEDB_COMPAT_H */
