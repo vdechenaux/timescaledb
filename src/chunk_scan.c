@@ -257,8 +257,6 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 				Assert(OidIsValid(chunk->table_id));
 				unlocked_chunks[unlocked_chunk_count] = chunk;
 				unlocked_chunk_count++;
-
-				prev_chunk_oid = chunk->table_id;
 			}
 
 			MemoryContextSwitchTo(work_mcxt);
