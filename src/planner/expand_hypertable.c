@@ -863,9 +863,9 @@ collect_quals_walker(Node *node, CollectQualCtx *ctx)
 }
 
 static int
-chunk_cmp_chunk_id(const void *c1, const void *c2)
+chunk_cmp_chunk_reloid(const void *c1, const void *c2)
 {
-	return (*(Chunk **) c1)->fd.id - (*(Chunk **) c2)->fd.id;
+	return (*(Chunk **) c1)->table_id - (*(Chunk **) c2)->table_id;
 }
 
 static Chunk **
@@ -904,16 +904,6 @@ find_children_chunks(HypertableRestrictInfo *hri, Hypertable *ht, LOCKMODE lockm
 	 * any rows.
 	 */
 	Chunk **chunks = ts_hypertable_restrict_info_get_chunks(hri, ht, lockmode, num_chunks);
-
-	if (!ts_hypertable_restrict_info_has_restrictions(hri))
-	{
-		/*
-		 * If we're using all the chunks, sort them by id ascending to roughly
-		 * match the order provided by find_inheritance_children. This is mostly
-		 * needed to avoid test reference changes.
-		 */
-		qsort(chunks, *num_chunks, sizeof(Chunk *), chunk_cmp_chunk_id);
-	}
 
 	return chunks;
 }

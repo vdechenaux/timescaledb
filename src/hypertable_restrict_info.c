@@ -661,6 +661,13 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 		}
 	}
 
+	/*
+	 * Sort the ids. This reduces the possibility of deadlocks when locking
+	 * the chunks, and also gives more favorable (closer to sequential) data
+	 * access patterns to our catalog tables and indexes.
+	 */
+	chunk_ids = list_sort_compat(chunk_ids, list_int_cmp_compat);
+
 	return ts_chunk_scan_by_chunk_ids(ht->space, chunk_ids, lockmode, num_chunks);
 }
 

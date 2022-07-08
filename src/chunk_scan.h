@@ -10,8 +10,6 @@
 
 #include "hypertable.h"
 
-extern Chunk **ts_chunk_scan_by_constraints(const Hyperspace *hs, const List *dimension_vecs,
-											LOCKMODE chunk_lockmode, unsigned int *numchunks);
 extern Chunk **ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
 										  LOCKMODE chunk_lockmode, unsigned int *numchunks);
 
