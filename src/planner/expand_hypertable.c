@@ -862,12 +862,6 @@ collect_quals_walker(Node *node, CollectQualCtx *ctx)
 	return expression_tree_walker(node, collect_quals_walker, ctx);
 }
 
-static int
-chunk_cmp_chunk_reloid(const void *c1, const void *c2)
-{
-	return (*(Chunk **) c1)->table_id - (*(Chunk **) c2)->table_id;
-}
-
 static Chunk **
 find_children_chunks(HypertableRestrictInfo *hri, Hypertable *ht, LOCKMODE lockmode,
 					 unsigned int *num_chunks)
