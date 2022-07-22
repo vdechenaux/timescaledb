@@ -733,8 +733,9 @@ collect_colstat_slots(const HeapTuple tuple, const Form_pg_statistic formdata, D
 		ATTSTATSSLOT_NUMBERS,						/* CORRELATION */
 		ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS, /* MCELEM */
 		ATTSTATSSLOT_NUMBERS,						/* DECHIST */
-		ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS, /* RANGE_LENGTH_HISTOGRAM */
-		ATTSTATSSLOT_VALUES							/* BOUNDS_HISTOGRAM */
+		/* ATTSTATSSLOT_VALUES is not always present for all HISTOGRAM operators.. */
+		ATTSTATSSLOT_NUMBERS, /* RANGE_LENGTH_HISTOGRAM */
+		ATTSTATSSLOT_VALUES   /* BOUNDS_HISTOGRAM */
 	};
 
 	int i;
@@ -772,8 +773,12 @@ collect_colstat_slots(const HeapTuple tuple, const Form_pg_statistic formdata, D
 			continue;
 		}
 
-		convert_op_oid_to_strings(slot_op, op_strings + nopstrings);
-		nopstrings += STRINGS_PER_OP_OID;
+		/* slot_op can be invalid for some "kinds" like STATISTIC_KIND_BOUNDS_HISTOGRAM */
+		if (OidIsValid(slot_op))
+		{
+			convert_op_oid_to_strings(slot_op, op_strings + nopstrings);
+			nopstrings += STRINGS_PER_OP_OID;
+		}
 
 		if (kind > STATISTIC_KIND_BOUNDS_HISTOGRAM)
 			ereport(ERROR,
@@ -1335,6 +1340,7 @@ static void
 fetch_remote_chunk_stats(Hypertable *ht, FunctionCallInfo fcinfo, bool col_stats)
 {
 	StatsProcessContext statsctx;
+	List *data_nodes;
 	DistCmdResult *cmdres;
 	TupleDesc tupdesc;
 	TupleFactory *tf;
@@ -1350,7 +1356,8 @@ fetch_remote_chunk_stats(Hypertable *ht, FunctionCallInfo fcinfo, bool col_stats
 				 errmsg("function returning record called in context "
 						"that cannot accept type record")));
 
-	cmdres = ts_dist_cmd_invoke_func_call_on_all_data_nodes(fcinfo);
+	data_nodes = ts_hypertable_get_data_node_name_list(ht);
+	cmdres = ts_dist_cmd_invoke_func_call_on_data_nodes(fcinfo, data_nodes);
 
 	/* Expect TEXT response format since dist command API currently defaults
 	 * to requesting TEXT */
