@@ -553,8 +553,8 @@ get_reindex_options(ReindexStmt *stmt)
 inline static int
 list_int_cmp_compat(const void *p1, const void *p2)
 {
-	int			v1 = *((int *) p1);
-	int			v2 = *((int *) p2);
+	int v1 = *((int *) p1);
+	int v2 = *((int *) p2);
 
 	if (v1 < v2)
 		return -1;
@@ -566,8 +566,8 @@ list_int_cmp_compat(const void *p1, const void *p2)
 inline static int
 list_int_cmp_compat(const ListCell *p1, const ListCell *p2)
 {
-	int			v1 = lfirst_int(p1);
-	int			v2 = lfirst_int(p2);
+	int v1 = lfirst_int(p1);
+	int v2 = lfirst_int(p2);
 
 	if (v1 < v2)
 		return -1;
