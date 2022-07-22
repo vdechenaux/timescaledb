@@ -83,7 +83,7 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 
 			if (!is_dropped)
 			{
-				Chunk *chunk = MemoryContextAllocZero(ti->mctx, sizeof(Chunk));
+				Chunk *chunk = MemoryContextAllocZero(orig_mcxt, sizeof(Chunk));
 
 				MemoryContext old_mcxt = MemoryContextSwitchTo(ti->mctx);
 				ts_chunk_formdata_fill(&chunk->fd, ti);
@@ -212,6 +212,7 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 			DimensionSlice *slice_copy = ts_dimension_slice_create(slice_ptr->fd.dimension_id,
 																   slice_ptr->fd.range_start,
 																   slice_ptr->fd.range_end);
+			slice_copy->fd.id = slice_ptr->fd.id;
 			MemoryContextSwitchTo(work_mcxt);
 			Assert(cube->capacity > cube->num_slices);
 			cube->slices[cube->num_slices++] = slice_copy;
