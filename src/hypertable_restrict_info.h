@@ -22,12 +22,12 @@ extern void ts_hypertable_restrict_info_add(HypertableRestrictInfo *hri, Planner
 extern bool ts_hypertable_restrict_info_has_restrictions(HypertableRestrictInfo *hri);
 
 /* Get a list of chunk oids for chunks whose constraints match the restriction clauses */
-extern Chunk **ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *ht, unsigned int *num_chunks);
+extern Chunk **ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *ht,
+													  unsigned int *num_chunks);
 
 extern Chunk **ts_hypertable_restrict_info_get_chunks_ordered(HypertableRestrictInfo *hri,
 															  Hypertable *ht, Chunk **chunks,
-															  bool reverse,
-															  List **nested_oids,
+															  bool reverse, List **nested_oids,
 															  unsigned int *num_chunks);
 
 #endif /* TIMESCALEDB_HYPERTABLE_RESTRICT_INFO_H */

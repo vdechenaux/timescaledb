@@ -708,8 +708,8 @@ chunk_cmp_reverse(const void *c1, const void *c2)
  */
 Chunk **
 ts_hypertable_restrict_info_get_chunks_ordered(HypertableRestrictInfo *hri, Hypertable *ht,
-											   Chunk **chunks, bool reverse,
-											   List **nested_oids, unsigned int *num_chunks)
+											   Chunk **chunks, bool reverse, List **nested_oids,
+											   unsigned int *num_chunks)
 {
 	List *slot_chunk_oids = NIL;
 	DimensionSlice *slice = NULL;

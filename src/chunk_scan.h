@@ -10,6 +10,7 @@
 
 #include "hypertable.h"
 
-extern Chunk **ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, unsigned int *numchunks);
+extern Chunk **ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
+										  unsigned int *numchunks);
 
 #endif /* TIMESCALEDB_CHUNK_SCAN_H */

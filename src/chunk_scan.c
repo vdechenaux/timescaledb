@@ -37,8 +37,7 @@
  * tables and indexes open until all the metadata is scanned for all chunks.
  */
 Chunk **
-ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
-						   unsigned int *num_chunks)
+ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, unsigned int *num_chunks)
 {
 	MemoryContext work_mcxt =
 		AllocSetContextCreate(CurrentMemoryContext, "chunk-scan-work", ALLOCSET_DEFAULT_SIZES);
