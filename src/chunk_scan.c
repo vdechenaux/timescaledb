@@ -56,8 +56,8 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	orig_mcxt = MemoryContextSwitchTo(work_mcxt);
 
 	/*
-	 * Step 1: For each matching chunk, fill in the metadata from the "chunk"
-	 * table. Make sure to filter out "dropped" chunks.
+	 * For each matching chunk, fill in the metadata from the "chunk" table.
+	 * Make sure to filter out "dropped" chunks.
 	 */
 	ScanIterator chunk_it = ts_chunk_scan_iterator_create(orig_mcxt);
 	unlocked_chunks = MemoryContextAlloc(work_mcxt, sizeof(Chunk *) * list_length(chunk_ids));
@@ -114,12 +114,22 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	/*
 	 * Batch the lookups to each catalog cache to have more favorable access
 	 * patterns.
+	 * Schema oid isn't likely to change, so cache it.
 	 */
+	char *last_schema_name = NULL;
+	Oid last_schema_oid = InvalidOid;
 	for (int i = 0; i < unlocked_chunk_count; i++)
 	{
 		Chunk *chunk = unlocked_chunks[i];
-		Oid schema_oid = get_namespace_oid(NameStr(chunk->fd.schema_name), false);
-		chunk->table_id = get_relname_relid(NameStr(chunk->fd.table_name), schema_oid);
+
+		char *current_schema_name = NameStr(chunk->fd.schema_name);
+		if (last_schema_name == NULL || strcmp(last_schema_name, current_schema_name) != 0)
+		{
+			last_schema_name = current_schema_name;
+			last_schema_oid = get_namespace_oid(current_schema_name, false);
+		}
+
+		chunk->table_id = get_relname_relid(NameStr(chunk->fd.table_name), last_schema_oid);
 		Assert(OidIsValid(chunk->table_id));
 	}
 
@@ -129,6 +139,9 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 		chunk->relkind = get_rel_relkind(chunk->table_id);
 	}
 
+	/*
+	 * Lock the chunks.
+	 */
 	for (int i = 0; i < unlocked_chunk_count; i++)
 	{
 		Chunk *chunk = unlocked_chunks[i];
@@ -150,9 +163,7 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	}
 
 	/*
-	 * Step 2: The chunk stub scan only contained dimensional
-	 * constraints. Scan the chunk constraints again to get all
-	 * constraints.
+	 * Fetch the chunk constraints.
 	 */
 	ScanIterator constr_it = ts_chunk_constraint_scan_iterator_create(orig_mcxt);
 
@@ -175,8 +186,8 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	ts_scan_iterator_close(&constr_it);
 
 	/*
-	 * Step 3: Build hypercube for the chunks by finding and combining the
-	 * dimension slices that match the chunk constraints.
+	 * Build hypercubes for the chunks by finding and combining the dimension
+	 * slices that match the chunk constraints.
 	 */
 	ScanIterator slice_iterator = ts_dimension_slice_scan_iterator_create(NULL, orig_mcxt);
 	for (int chunk_index = 0; chunk_index < locked_chunk_count; chunk_index++)
@@ -225,7 +236,7 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	Assert(CurrentMemoryContext == work_mcxt);
 
 	/*
-	 * Step 4: Fill in data nodes for remote chunks.
+	 * Fill in data nodes for remote chunks.
 	 *
 	 * Avoid the loop if there are no remote chunks. (Typically, either all
 	 * chunks are remote chunks or none are.)
