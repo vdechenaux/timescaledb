@@ -1543,7 +1543,7 @@ ts_chunk_create_for_point(const Hypertable *ht, const Point *p, const char *sche
  * Returns a list of matching chunk ids.
  */
 List *
-ts_chunk_id_find_in_subspace(Hypertable *ht, List *dimension_vecs, LOCKMODE lockmode)
+ts_chunk_id_find_in_subspace(Hypertable *ht, List *dimension_vecs)
 {
 	List *chunk_ids = NIL;
 

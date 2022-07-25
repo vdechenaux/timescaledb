@@ -37,7 +37,7 @@
  * tables and indexes open until all the metadata is scanned for all chunks.
  */
 Chunk **
-ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE chunk_lockmode,
+ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids,
 						   unsigned int *num_chunks)
 {
 	MemoryContext work_mcxt =
@@ -146,7 +146,7 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, LOCKMODE
 	{
 		Chunk *chunk = unlocked_chunks[i];
 
-		if (ts_chunk_lock_if_exists(chunk->table_id, chunk_lockmode))
+		if (ts_chunk_lock_if_exists(chunk->table_id, AccessShareLock))
 		{
 			/* Lazy initialize the chunks array */
 			if (NULL == locked_chunks)

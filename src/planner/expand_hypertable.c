@@ -863,8 +863,7 @@ collect_quals_walker(Node *node, CollectQualCtx *ctx)
 }
 
 static Chunk **
-find_children_chunks(HypertableRestrictInfo *hri, Hypertable *ht, LOCKMODE lockmode,
-					 unsigned int *num_chunks)
+find_children_chunks(HypertableRestrictInfo *hri, Hypertable *ht, unsigned int *num_chunks)
 {
 	if (TS_HYPERTABLE_IS_INTERNAL_COMPRESSION_TABLE(ht))
 	{
@@ -872,7 +871,7 @@ find_children_chunks(HypertableRestrictInfo *hri, Hypertable *ht, LOCKMODE lockm
 		 * Chunk lookup doesn't work for internal compression tables, have to
 		 * fall back to the regular postgres method.
 		 */
-		List *chunk_oids = find_inheritance_children(ht->main_table_relid, lockmode);
+		List *chunk_oids = find_inheritance_children(ht->main_table_relid, AccessShareLock);
 		if (chunk_oids == NIL)
 		{
 			*num_chunks = 0;
@@ -897,7 +896,7 @@ find_children_chunks(HypertableRestrictInfo *hri, Hypertable *ht, LOCKMODE lockm
 	 * have a trigger blocking inserts on the parent table it cannot contain
 	 * any rows.
 	 */
-	Chunk **chunks = ts_hypertable_restrict_info_get_chunks(hri, ht, lockmode, num_chunks);
+	Chunk **chunks = ts_hypertable_restrict_info_get_chunks(hri, ht, num_chunks);
 
 	return chunks;
 }
@@ -929,7 +928,7 @@ should_order_append(PlannerInfo *root, RelOptInfo *rel, Hypertable *ht, List *jo
  */
 static Chunk **
 get_explicit_chunks(CollectQualCtx *ctx, PlannerInfo *root, RelOptInfo *rel, Hypertable *ht,
-					LOCKMODE chunk_lockmode, unsigned int *num_chunks)
+					unsigned int *num_chunks)
 {
 	Const *chunks_arg;
 	ArrayIterator chunk_id_iterator;
@@ -1017,7 +1016,7 @@ get_explicit_chunks(CollectQualCtx *ctx, PlannerInfo *root, RelOptInfo *rel, Hyp
 
 	for (i = 0; i < unlocked_chunk_count; i++)
 	{
-		if (ts_chunk_lock_if_exists(unlocked_chunks[i]->table_id, chunk_lockmode))
+		if (ts_chunk_lock_if_exists(unlocked_chunks[i]->table_id, AccessShareLock))
 			chunks[(*num_chunks)++] = unlocked_chunks[i];
 	}
 
@@ -1059,7 +1058,6 @@ get_explicit_chunks(CollectQualCtx *ctx, PlannerInfo *root, RelOptInfo *rel, Hyp
 		return ts_hypertable_restrict_info_get_chunks_ordered(NULL,
 															  ht,
 															  chunks,
-															  chunk_lockmode,
 															  reverse,
 															  nested_oids,
 															  num_chunks);
@@ -1084,11 +1082,10 @@ get_chunks(CollectQualCtx *ctx, PlannerInfo *root, RelOptInfo *rel, Hypertable *
 {
 	bool reverse;
 	int order_attno;
-	LOCKMODE lockmode = AccessShareLock;
 
 	if (ctx->chunk_exclusion_func != NULL)
 	{
-		return get_explicit_chunks(ctx, root, rel, ht, lockmode, num_chunks);
+		return get_explicit_chunks(ctx, root, rel, ht, num_chunks);
 	}
 
 	HypertableRestrictInfo *hri = ts_hypertable_restrict_info_create(rel, ht);
@@ -1125,13 +1122,12 @@ get_chunks(CollectQualCtx *ctx, PlannerInfo *root, RelOptInfo *rel, Hypertable *
 		return ts_hypertable_restrict_info_get_chunks_ordered(hri,
 															  ht,
 															  NULL,
-															  lockmode,
 															  reverse,
 															  nested_oids,
 															  num_chunks);
 	}
 
-	return find_children_chunks(hri, ht, lockmode, num_chunks);
+	return find_children_chunks(hri, ht, num_chunks);
 }
 
 /*

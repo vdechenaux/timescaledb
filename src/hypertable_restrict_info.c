@@ -612,7 +612,7 @@ gather_restriction_dimension_vectors(const HypertableRestrictInfo *hri)
 
 Chunk **
 ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *ht,
-									   LOCKMODE lockmode, unsigned int *num_chunks)
+									   unsigned int *num_chunks)
 {
 	/*
 	 * Filter out the dimensions for which we don't have a nontrivial
@@ -657,7 +657,7 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 		else
 		{
 			/* Find the chunks matching these dimension slices. */
-			chunk_ids = ts_chunk_id_find_in_subspace(ht, good_dimensions, lockmode);
+			chunk_ids = ts_chunk_id_find_in_subspace(ht, good_dimensions);
 		}
 	}
 
@@ -668,7 +668,7 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 	 */
 	chunk_ids = list_sort_compat(chunk_ids, list_int_cmp_compat);
 
-	return ts_chunk_scan_by_chunk_ids(ht->space, chunk_ids, lockmode, num_chunks);
+	return ts_chunk_scan_by_chunk_ids(ht->space, chunk_ids, num_chunks);
 }
 
 /*
@@ -711,7 +711,7 @@ chunk_cmp_reverse(const void *c1, const void *c2)
  */
 Chunk **
 ts_hypertable_restrict_info_get_chunks_ordered(HypertableRestrictInfo *hri, Hypertable *ht,
-											   Chunk **chunks, LOCKMODE lockmode, bool reverse,
+											   Chunk **chunks, bool reverse,
 											   List **nested_oids, unsigned int *num_chunks)
 {
 	List *slot_chunk_oids = NIL;
@@ -720,7 +720,7 @@ ts_hypertable_restrict_info_get_chunks_ordered(HypertableRestrictInfo *hri, Hype
 
 	if (chunks == NULL)
 	{
-		chunks = ts_hypertable_restrict_info_get_chunks(hri, ht, lockmode, num_chunks);
+		chunks = ts_hypertable_restrict_info_get_chunks(hri, ht, num_chunks);
 	}
 
 	if (*num_chunks == 0)
