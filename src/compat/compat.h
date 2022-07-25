@@ -547,7 +547,7 @@ get_reindex_options(ReindexStmt *stmt)
 #endif
 
 /*
- * List sorting functions are different in PG before 13.
+ * List sorting functions differ between the PG versions.
  */
 #if PG13_LT
 inline static int

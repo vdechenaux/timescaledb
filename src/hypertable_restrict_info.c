@@ -519,10 +519,6 @@ scan_and_append_slices(ScanIterator *it, int old_nkeys, DimensionVec **dv, bool 
 	return *dv;
 }
 
-/*
- * FIXME why do we need dimension vectors? Just make a list of slices, this will
- * let us use the exact same code from chunk_point_find.
- */
 static List *
 gather_restriction_dimension_vectors(const HypertableRestrictInfo *hri)
 {
@@ -645,8 +641,8 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 		 * Have some nontrivial restrictions, enumerate the matching dimension
 		 * slices.
 		 */
-		List *good_dimensions = gather_restriction_dimension_vectors(hri);
-		if (list_length(good_dimensions) == 0)
+		List *dimension_vectors = gather_restriction_dimension_vectors(hri);
+		if (list_length(dimension_vectors) == 0)
 		{
 			/*
 			 * No dimension slices match for some nontrivial dimension. This means
@@ -657,14 +653,15 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 		else
 		{
 			/* Find the chunks matching these dimension slices. */
-			chunk_ids = ts_chunk_id_find_in_subspace(ht, good_dimensions);
+			chunk_ids = ts_chunk_id_find_in_subspace(ht, dimension_vectors);
 		}
 	}
 
 	/*
-	 * Sort the ids. This reduces the possibility of deadlocks when locking
-	 * the chunks, and also gives more favorable (closer to sequential) data
-	 * access patterns to our catalog tables and indexes.
+	 * Sort the ids to have more favorable (closer to sequential) data access
+	 * patterns to our catalog tables and indexes.
+	 * We don't care about the locking order here, because this code uses
+	 * AccessShareLock that doesn't conflict with itself.
 	 */
 	chunk_ids = list_sort_compat(chunk_ids, list_int_cmp_compat);
 

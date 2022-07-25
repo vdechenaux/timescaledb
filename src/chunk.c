@@ -1556,6 +1556,12 @@ ts_chunk_id_find_in_subspace(Hypertable *ht, List *dimension_vecs)
 	foreach (lc, dimension_vecs)
 	{
 		const DimensionVec *vec = lfirst(lc);
+		/*
+		 * We shouldn't see a dimension with zero matching dimension slices.
+		 * That would mean that no chunks match at all, this should have been
+		 * handled earlier by gater_restriction_dimension_vectors().
+		 */
+		Assert(vec->num_slices > 0);
 		for (int i = 0; i < vec->num_slices; i++)
 		{
 			const DimensionSlice *slice = vec->slices[i];
