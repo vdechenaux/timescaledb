@@ -17,6 +17,9 @@
 #include "func_cache.h"
 #include "guc.h"
 
+static bool contain_scalar_array_op_param(Node *node);
+static bool contain_scalar_array_op_param_walker(Node *node, void *context);
+
 static Var *find_equality_join_var(Var *sort_var, Index ht_relid, Oid eq_opr,
 								   List *join_conditions);
 
@@ -115,7 +118,7 @@ ts_chunk_append_path_create(PlannerInfo *root, RelOptInfo *rel, Hypertable *ht, 
 			ListCell *lc_var;
 
 			/*
-			 * check the param references a partitioning column of the hypertable
+			 * check the clause references a partitioning column of the hypertable
 			 * otherwise we skip runtime exclusion
 			 */
 			foreach (lc_var, pull_var_clause((Node *) rinfo->clause, 0))
@@ -134,6 +137,9 @@ ts_chunk_append_path_create(PlannerInfo *root, RelOptInfo *rel, Hypertable *ht, 
 					break;
 				}
 			}
+
+			if(!path->runtime_exclusion)
+			  path->runtime_exclusion = contain_scalar_array_op_param((Node *) rinfo->clause);
 		}
 	}
 
@@ -411,6 +417,32 @@ ts_ordered_append_should_optimize(PlannerInfo *root, RelOptInfo *rel, Hypertable
 	*reverse = sort->sortop == tce->lt_opr ? false : true;
 
 	return true;
+}
+
+// Check for ANY clauses with params.
+// X OP ANY($1) clauses are always false if $1 is an empty array.
+// this holds whether or not X can be derived and so is worth checking
+// independent of whether X is a partitioning column.
+// This is checked for in Postgres in predtest.c
+static bool
+contain_scalar_array_op_param(Node *node)
+{
+	return contain_scalar_array_op_param_walker(node, NULL);
+}
+
+static bool
+contain_scalar_array_op_param_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, ScalarArrayOpExpr)){
+		ScalarArrayOpExpr *saoe = castNode(ScalarArrayOpExpr, node);
+		/* useOr tests whether this is ANY as opposed to ALL */
+		return saoe->useOr && IsA(lsecond(saoe->args), Param);
+	}
+
+	return expression_tree_walker(node, contain_scalar_array_op_param_walker, context);
 }
 
 /*

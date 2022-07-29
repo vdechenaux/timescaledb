@@ -786,6 +786,8 @@ constify_param_mutator(Node *node, void *context)
 			{
 				ExprContext *econtext = GetPerTupleExprContext(estate);
 				ExecSetParamPlan(prm.execPlan, econtext);
+				//reload prm as it may have changed
+				prm = estate->es_param_exec_vals[param->paramid];
 			}
 
 			if (prm.execPlan == NULL)
