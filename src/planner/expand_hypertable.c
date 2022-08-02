@@ -862,6 +862,12 @@ collect_quals_walker(Node *node, CollectQualCtx *ctx)
 	return expression_tree_walker(node, collect_quals_walker, ctx);
 }
 
+static int
+chunk_cmp_chunk_reloid(const void *c1, const void *c2)
+{
+	return (*(Chunk **) c1)->table_id - (*(Chunk **) c2)->table_id;
+}
+
 static Chunk **
 find_children_chunks(HypertableRestrictInfo *hri, Hypertable *ht, unsigned int *num_chunks)
 {
@@ -897,6 +903,13 @@ find_children_chunks(HypertableRestrictInfo *hri, Hypertable *ht, unsigned int *
 	 * any rows.
 	 */
 	Chunk **chunks = ts_hypertable_restrict_info_get_chunks(hri, ht, num_chunks);
+
+	/*
+	 * Sort the chunks by oid ascending to roughly match the order provided
+	 * by find_inheritance_children. This is mostly needed to avoid test
+	 * reference changes.
+	 */
+	qsort(chunks, *num_chunks, sizeof(Chunk *), chunk_cmp_chunk_reloid);
 
 	return chunks;
 }
