@@ -395,8 +395,17 @@ initialize_runtime_exclusion(ChunkAppendState *state)
 		{
 			state->runtime_initialized = true;
 			state->runtime_number_exclusions = state->num_subplans;
+			return;
 		}
-		/* if we are doing parent exclusion, don't do chunk-by-chunk exclusion */
+		/* If doing parent exclusion, don't do chunk-by-chunk exclusion
+		 * even if parent exclusion couldn't exclude any chunks.
+		 * Simply add all the subplans and exit.
+		 */
+		for (i = 0; i < state->num_subplans; i++)
+		{
+			state->valid_subplans = bms_add_member(state->valid_subplans, i);
+		}
+		state->runtime_initialized = true;
 		return;
 	}
 
