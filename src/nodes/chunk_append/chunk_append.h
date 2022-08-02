@@ -16,6 +16,7 @@ typedef struct ChunkAppendPath
 	CustomPath cpath;
 	bool startup_exclusion;
 	bool runtime_exclusion;
+	bool runtime_exclude_chunk_constraints;
 	bool pushdown_limit;
 	int limit_tuples;
 	int first_partial_path;

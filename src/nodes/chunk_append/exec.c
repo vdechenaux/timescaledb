@@ -62,6 +62,8 @@ typedef struct ChunkAppendState
 	List *initial_constraints;
 	/* list of restrictinfo clauses indexed like initial_subplans */
 	List *initial_ri_clauses;
+	/* List of restrictinfo clauses on the parent hypertable */
+	List *initial_parent_clauses;
 
 	/* list of subplans after startup exclusion */
 	List *filtered_subplans;
@@ -140,6 +142,7 @@ ts_chunk_append_state_create(CustomScan *cscan)
 	state->initial_subplans = cscan->custom_plans;
 	state->initial_ri_clauses = lsecond(cscan->custom_private);
 	state->sort_options = lfourth(cscan->custom_private);
+	state->initial_parent_clauses = lfirst(list_nth_cell(cscan->custom_private, 4));
 
 	state->startup_exclusion = (bool) linitial_int(settings);
 	state->runtime_exclusion = (bool) lsecond_int(settings);
@@ -329,6 +332,30 @@ chunk_append_begin(CustomScanState *node, EState *estate, int eflags)
 	}
 }
 
+static bool
+can_exclude_constraints_using_clauses(ChunkAppendState *state, List *constraints, List *clauses,
+									  PlannerInfo root, PlanState *ps)
+{
+	bool can_exclude;
+	ListCell *lc;
+	MemoryContext old = MemoryContextSwitchTo(state->exclusion_ctx);
+	List *restrictinfos = NIL;
+
+	foreach (lc, clauses)
+	{
+		RestrictInfo *ri = makeNode(RestrictInfo);
+		ri->clause = lfirst(lc);
+		restrictinfos = lappend(restrictinfos, ri);
+	}
+	restrictinfos = constify_restrictinfo_params(&root, ps->state, restrictinfos);
+
+	can_exclude = can_exclude_chunk(constraints, restrictinfos);
+
+	MemoryContextReset(state->exclusion_ctx);
+	MemoryContextSwitchTo(old);
+	return can_exclude;
+}
+
 /*
  * build bitmap of valid subplans for runtime exclusion
  */
@@ -345,11 +372,6 @@ initialize_runtime_exclusion(ChunkAppendState *state)
 		.glob = &glob,
 	};
 
-	Assert(state->num_subplans == list_length(state->filtered_ri_clauses));
-
-	lc_clauses = list_head(state->filtered_ri_clauses);
-	lc_constraints = list_head(state->filtered_constraints);
-
 	if (state->num_subplans == 0)
 	{
 		state->runtime_initialized = true;
@@ -357,6 +379,32 @@ initialize_runtime_exclusion(ChunkAppendState *state)
 	}
 
 	state->runtime_number_loops++;
+
+	if (state->initial_parent_clauses != NIL)
+	{
+		/* try to exclude all the chunks using the parents clauses.
+		 * here, all constraints are true but exclusion can still
+		 * happen because of things like ANY(empty set), and NULL
+		 * inference
+		 */
+		if (can_exclude_constraints_using_clauses(state,
+												  list_make1(makeBoolConst(true, false)),
+												  state->initial_parent_clauses,
+												  root,
+												  &state->csstate.ss.ps))
+		{
+			state->runtime_initialized = true;
+			state->runtime_number_exclusions = state->num_subplans;
+		}
+		/* if we are doing parent exclusion, don't do chunk-by-chunk exclusion */
+		return;
+	}
+
+	Assert(state->num_subplans == list_length(state->filtered_ri_clauses));
+
+	lc_clauses = list_head(state->filtered_ri_clauses);
+	lc_constraints = list_head(state->filtered_constraints);
+
 	/*
 	 * mark subplans as active/inactive in valid_subplans
 	 */
@@ -364,8 +412,6 @@ initialize_runtime_exclusion(ChunkAppendState *state)
 	{
 		PlanState *ps = state->subplanstates[i];
 		Scan *scan = ts_chunk_append_get_scan_plan(ps->plan);
-		List *restrictinfos = NIL;
-		ListCell *lc;
 
 		if (scan == NULL || scan->scanrelid == 0)
 		{
@@ -373,21 +419,11 @@ initialize_runtime_exclusion(ChunkAppendState *state)
 		}
 		else
 		{
-			bool can_exclude;
-			MemoryContext old = MemoryContextSwitchTo(state->exclusion_ctx);
-
-			foreach (lc, lfirst(lc_clauses))
-			{
-				RestrictInfo *ri = makeNode(RestrictInfo);
-				ri->clause = lfirst(lc);
-				restrictinfos = lappend(restrictinfos, ri);
-			}
-			restrictinfos = constify_restrictinfo_params(&root, ps->state, restrictinfos);
-
-			can_exclude = can_exclude_chunk(lfirst(lc_constraints), restrictinfos);
-
-			MemoryContextReset(state->exclusion_ctx);
-			MemoryContextSwitchTo(old);
+			bool can_exclude = can_exclude_constraints_using_clauses(state,
+																	 lfirst(lc_constraints),
+																	 lfirst(lc_clauses),
+																	 root,
+																	 ps);
 
 			if (!can_exclude)
 				state->valid_subplans = bms_add_member(state->valid_subplans, i);
@@ -786,7 +822,7 @@ constify_param_mutator(Node *node, void *context)
 			{
 				ExprContext *econtext = GetPerTupleExprContext(estate);
 				ExecSetParamPlan(prm.execPlan, econtext);
-				//reload prm as it may have changed
+				// reload prm as it may have changed
 				prm = estate->es_param_exec_vals[param->paramid];
 			}
 
