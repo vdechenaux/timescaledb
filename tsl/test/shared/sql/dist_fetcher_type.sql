@@ -95,3 +95,44 @@ set timescaledb.remote_data_fetcher = 'cursor';
 explain (analyze, verbose, costs off, timing off, summary off)
 select * from disttable_with_bytea;
 select * from disttable_with_bytea;
+
+-- #4515 test for assertion failure in row_by_row_fetcher_close
+SET timescaledb.remote_data_fetcher = 'rowbyrow';
+SELECT *
+FROM
+  conditions ref_0
+WHERE EXISTS (
+  SELECT FROM
+    distinct_on_distributed,
+    LATERAL (
+      SELECT *
+      FROM pg_class,
+      LATERAL (
+        SELECT ref_0.device FROM pg_class WHERE false LIMIT 1) as lat_1
+      ) as lat_2
+  WHERE (SELECT 1 FROM pg_class LIMIT 1) >= ref_0.device
+);
+
+-- #4518
+-- test error handling for queries with multiple distributed hypertables
+SET timescaledb.remote_data_fetcher = 'rowbyrow';
+SELECT * FROM
+  conditions_dist1 ref_0
+WHERE EXISTS (
+  SELECT FROM
+    distinct_on_distributed as ref_1,
+    LATERAL (select * from metrics as ref_2) as subq_3
+  WHERE
+    (SELECT device_id FROM metrics_compressed limit 1 offset 3) >= ref_0.device
+);
+SET timescaledb.remote_data_fetcher = 'auto';
+SELECT * FROM
+  conditions_dist1 ref_0
+WHERE EXISTS (
+  SELECT FROM
+    distinct_on_distributed as ref_1,
+    LATERAL (select * from metrics as ref_2) as subq_3
+  WHERE
+    (SELECT device_id FROM metrics_compressed limit 1 offset 3) >= ref_0.device
+)
+ORDER BY 1,2;

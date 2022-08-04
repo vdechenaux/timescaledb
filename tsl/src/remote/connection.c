@@ -1015,19 +1015,11 @@ remote_result_query_ok(PGresult *res)
 void
 remote_validate_extension_version(TSConnection *conn, const char *data_node_version)
 {
-	bool old_version;
-
-	if (!dist_util_is_compatible_version(data_node_version, TIMESCALEDB_VERSION, &old_version))
+	if (!dist_util_is_compatible_version(data_node_version, TIMESCALEDB_VERSION))
 		ereport(ERROR,
 				(errcode(ERRCODE_TS_DATA_NODE_INVALID_CONFIG),
 				 errmsg("remote PostgreSQL instance has an incompatible timescaledb extension "
 						"version"),
-				 errdetail_internal("Access node version: %s, remote version: %s.",
-									TIMESCALEDB_VERSION_MOD,
-									data_node_version)));
-	if (old_version)
-		ereport(WARNING,
-				(errmsg("remote PostgreSQL instance has an outdated timescaledb extension version"),
 				 errdetail_internal("Access node version: %s, remote version: %s.",
 									TIMESCALEDB_VERSION_MOD,
 									data_node_version)));
@@ -2176,7 +2168,8 @@ remote_connection_begin_copy(TSConnection *conn, const char *copycmd, bool binar
 	if (binary && !send_binary_copy_header(conn, err))
 		goto err_end_copy;
 
-	if (PQsetnonblocking(pg_conn, 1))
+	/* Switch the connection into nonblocking mode for the duration of COPY. */
+	if (PQsetnonblocking(pg_conn, 1) != 0)
 	{
 		(void) fill_simple_error(err,
 								 ERRCODE_CONNECTION_EXCEPTION,
@@ -2281,7 +2274,7 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 		}
 
 		/* Switch the connection into blocking mode. */
-		if (PQsetnonblocking(conn->pg_conn, 0))
+		if (PQsetnonblocking(conn->pg_conn, 0) != 0)
 		{
 			return fill_simple_error(err,
 									 ERRCODE_CONNECTION_EXCEPTION,

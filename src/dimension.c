@@ -15,6 +15,7 @@
 #include <funcapi.h>
 #include <miscadmin.h>
 #include <nodes/makefuncs.h>
+#include <storage/lmgr.h>
 
 #include "ts_catalog/catalog.h"
 #include "compat/compat.h"
@@ -30,6 +31,7 @@
 #include "time_utils.h"
 #include "utils.h"
 #include "errors.h"
+#include "debug_point.h"
 
 /* add_dimension record attribute numbers */
 enum Anum_add_dimension
@@ -194,6 +196,15 @@ dimension_fill_in_from_tuple(Dimension *d, TupleInfo *ti, Oid main_table_relid)
 													  NameStr(d->fd.column_name),
 													  d->type,
 													  main_table_relid);
+
+		/* Closed "space" partitions might be explicitly partitioned if it is
+		 * the "first" space dimension. If it is not the first, the dimension
+		 * partitions state will be NULL */
+		if (IS_CLOSED_DIMENSION(d))
+			d->dimension_partitions = ts_dimension_partition_info_get(d->fd.id);
+		else
+			d->dimension_partitions = NULL;
+
 		MemoryContextSwitchTo(old);
 	}
 
@@ -208,7 +219,7 @@ dimension_fill_in_from_tuple(Dimension *d, TupleInfo *ti, Oid main_table_relid)
 					   values[AttrNumberGetAttrOffset(Anum_dimension_integer_now_func)]));
 	}
 
-	if (d->type == DIMENSION_TYPE_CLOSED)
+	if (IS_CLOSED_DIMENSION(d))
 		d->fd.num_slices = DatumGetInt16(values[Anum_dimension_num_slices - 1]);
 	else
 		d->fd.interval_length =
@@ -657,6 +668,8 @@ dimension_tuple_delete(TupleInfo *ti, void *data)
 	if (NULL != delete_slices && *delete_slices)
 		ts_dimension_slice_delete_by_dimension_id(DatumGetInt32(dimension_id), false);
 
+	/* delete all dimension partitions */
+	ts_dimension_partition_info_delete(DatumGetInt32(dimension_id));
 	ts_catalog_database_info_become_owner(ts_catalog_database_info_get(), &sec_ctx);
 	ts_catalog_delete_tid(ti->scanrel, ts_scanner_get_tuple_tid(ti));
 	ts_catalog_restore_user(&sec_ctx);
@@ -1136,6 +1149,7 @@ ts_dimension_update(const Hypertable *ht, const NameData *dimname, DimensionType
 	{
 		Assert(IS_CLOSED_DIMENSION(dim));
 		dim->fd.num_slices = *num_slices;
+		ts_hypertable_update_dimension_partitions(ht);
 	}
 
 	if (NULL != integer_now_func)
@@ -1504,13 +1518,14 @@ ts_dimension_add(PG_FUNCTION_ARGS)
 	 * means, that when this function is called from create_hypertable()
 	 * instead of directly, num_dimension is already set to one. We therefore
 	 * need to lock the hypertable tuple here so that we can set the correct
-	 * number of dimensions once we've added the new dimension
+	 * number of dimensions once we've added the new dimension.
+	 *
+	 * This lock is also used to serialize access from concurrent add_dimension()
+	 * call and a chunk creation.
 	 */
-	if (!ts_hypertable_lock_tuple_simple(info.table_relid))
-		ereport(ERROR,
-				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-				 errmsg("could not lock hypertable \"%s\" for update",
-						get_rel_name(info.table_relid))));
+	LockRelationOid(info.table_relid, ShareUpdateExclusiveLock);
+
+	DEBUG_WAITPOINT("add_dimension_ht_lock");
 
 	info.ht = ts_hypertable_cache_get_cache_and_entry(info.table_relid, CACHE_FLAG_NONE, &hcache);
 
@@ -1530,14 +1545,6 @@ ts_dimension_add(PG_FUNCTION_ARGS)
 	{
 		int32 dimension_id;
 
-		if (ts_hypertable_has_chunks(info.table_relid, AccessShareLock))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("hypertable \"%s\" has data or empty chunks",
-							get_rel_name(info.table_relid)),
-					 errdetail("It is not possible to add dimensions to a hypertable that has "
-							   "chunks. Please truncate the table.")));
-
 		/*
 		 * Note that space->num_dimensions reflects the actual number of
 		 * dimension rows and not the num_dimensions in the hypertable catalog
@@ -1545,6 +1552,21 @@ ts_dimension_add(PG_FUNCTION_ARGS)
 		 */
 		ts_hypertable_set_num_dimensions(info.ht, info.ht->space->num_dimensions + 1);
 		dimension_id = ts_dimension_add_from_info(&info);
+
+		/* If adding the first space dimension, also add dimension partition metadata */
+		if (info.type == DIMENSION_TYPE_CLOSED)
+		{
+			const Dimension *space_dim = hyperspace_get_closed_dimension(info.ht->space, 0);
+
+			if (space_dim != NULL)
+			{
+				List *data_nodes = ts_hypertable_get_available_data_nodes(info.ht, false);
+				ts_dimension_partition_info_recreate(dimension_id,
+													 info.num_slices,
+													 data_nodes,
+													 info.ht->fd.replication_factor);
+			}
+		}
 
 		/* Verify that existing indexes are compatible with a hypertable */
 
@@ -1558,6 +1580,38 @@ ts_dimension_add(PG_FUNCTION_ARGS)
 
 		/* Check that partitioning is sane */
 		ts_hypertable_check_partitioning(info.ht, dimension_id);
+
+		/*
+		 * If the hypertable has chunks, to make it compatible
+		 * we add artificial dimension slice which will cover -inf / inf
+		 * range.
+		 *
+		 * Newly created chunks will have a proper slice range according to
+		 * the created dimension and its partitioning.
+		 */
+		if (ts_hypertable_has_chunks(info.table_relid, AccessShareLock))
+		{
+			ListCell *lc;
+			List *chunk_id_list = ts_chunk_get_chunk_ids_by_hypertable_id(info.ht->fd.id);
+
+			DimensionSlice *slice;
+			slice = ts_dimension_slice_create(dimension_id,
+											  DIMENSION_SLICE_MINVALUE,
+											  DIMENSION_SLICE_MAXVALUE);
+			ts_dimension_slice_insert_multi(&slice, 1);
+
+			foreach (lc, chunk_id_list)
+			{
+				int32 chunk_id = lfirst_int(lc);
+				Chunk *chunk = ts_chunk_get_by_id(chunk_id, true);
+				ChunkConstraint *cc = ts_chunk_constraints_add(chunk->constraints,
+															   chunk->fd.id,
+															   slice->fd.id,
+															   NULL,
+															   NULL);
+				ts_chunk_constraint_insert(cc);
+			}
+		}
 	}
 
 	ts_hypertable_func_call_on_data_nodes(info.ht, fcinfo);

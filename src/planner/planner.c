@@ -152,6 +152,39 @@ DataFetcherType ts_data_node_fetcher_scan_type = AutoFetcherType;
  */
 static struct BaserelInfo_hash *ts_baserel_info = NULL;
 
+/*
+ * Add information about a chunk to the baserel info cache. Used to cache the
+ * chunk info at the plan time chunk exclusion.
+ */
+void
+add_baserel_cache_entry_for_chunk(Oid chunk_reloid, uint32 chunk_status, Hypertable *hypertable,
+								  TsRelType chunk_reltype)
+{
+	Assert(hypertable != NULL);
+	Assert(chunk_reltype == TS_REL_CHUNK || chunk_reltype == TS_REL_CHUNK_CHILD);
+
+	if (ts_baserel_info == NULL)
+	{
+		return;
+	}
+
+	bool found = false;
+	BaserelInfoEntry *entry = BaserelInfo_insert(ts_baserel_info, chunk_reloid, &found);
+	if (found)
+	{
+		/* Already cached, check that the parameters are the same. */
+		Assert(entry->type == chunk_reltype);
+		Assert(entry->ht != NULL);
+		Assert(entry->chunk_status == chunk_status);
+		return;
+	}
+
+	/* Fill the cache entry. */
+	entry->type = chunk_reltype;
+	entry->ht = hypertable;
+	entry->chunk_status = chunk_status;
+}
+
 static void
 rte_mark_for_expansion(RangeTblEntry *rte)
 {
@@ -482,20 +515,29 @@ timescaledb_planner(Query *parse, int cursor_opts, ParamListInfo bound_params)
 			{
 				reset_fetcher_type = true;
 
-				if (ts_guc_remote_data_fetcher == AutoFetcherType)
+				if (context.num_distributed_tables >= 2)
 				{
-					if (context.num_distributed_tables >= 2)
+					if (ts_guc_remote_data_fetcher == RowByRowFetcherType)
 					{
-						ts_data_node_fetcher_scan_type = CursorFetcherType;
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("row-by-row fetcher not supported"),
+								 errhint("Row-by-row fetching of data is not supported in "
+										 "queries with multiple distributed hypertables."
+										 " Use cursor fetcher instead.")));
 					}
-					else
-					{
-						ts_data_node_fetcher_scan_type = RowByRowFetcherType;
-					}
+					ts_data_node_fetcher_scan_type = CursorFetcherType;
 				}
 				else
 				{
-					ts_data_node_fetcher_scan_type = ts_guc_remote_data_fetcher;
+					if (ts_guc_remote_data_fetcher == AutoFetcherType)
+					{
+						ts_data_node_fetcher_scan_type = RowByRowFetcherType;
+					}
+					else
+					{
+						ts_data_node_fetcher_scan_type = ts_guc_remote_data_fetcher;
+					}
 				}
 			}
 
@@ -562,7 +604,7 @@ timescaledb_planner(Query *parse, int cursor_opts, ParamListInfo bound_params)
 				ts_data_node_fetcher_scan_type = AutoFetcherType;
 			}
 
-			if (reset_baserel_info)
+			if (reset_baserel_info && ts_baserel_info)
 			{
 				BaserelInfo_destroy(ts_baserel_info);
 				ts_baserel_info = NULL;
@@ -1147,7 +1189,8 @@ timescaledb_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, Rang
 															 root->parse->commandType ==
 																	 CMD_UPDATE ?
 																 CHUNK_UPDATE :
-																 CHUNK_DELETE);
+																 CHUNK_DELETE,
+															 true);
 			}
 			/* Check for UPDATE/DELETE (DML) on compressed chunks */
 			if (IS_UPDL_CMD(root->parse) && dml_involves_hypertable(root, ht, rti))

@@ -71,6 +71,7 @@ TS_FUNCTION_INFO_V1(ts_chunk_drop_chunks);
 TS_FUNCTION_INFO_V1(ts_chunk_drop_single_chunk);
 TS_FUNCTION_INFO_V1(ts_chunk_attach_osm_table_chunk);
 TS_FUNCTION_INFO_V1(ts_chunk_freeze_chunk);
+TS_FUNCTION_INFO_V1(ts_chunk_unfreeze_chunk);
 TS_FUNCTION_INFO_V1(ts_chunks_in);
 TS_FUNCTION_INFO_V1(ts_chunk_id_from_relid);
 TS_FUNCTION_INFO_V1(ts_chunk_show);
@@ -78,6 +79,9 @@ TS_FUNCTION_INFO_V1(ts_chunk_create);
 TS_FUNCTION_INFO_V1(ts_chunk_status);
 
 static bool ts_chunk_add_status(Chunk *chunk, int32 status);
+#if PG14_GE
+static bool ts_chunk_clear_status(Chunk *chunk, int32 status);
+#endif
 
 static const char *
 DatumGetNameString(Datum datum)
@@ -166,7 +170,7 @@ static Chunk *chunk_resurrect(const Hypertable *ht, int chunk_id);
 #define CHUNK_STATUS_COMPRESSED_UNORDERED 2
 /*
  * A chunk is in frozen state (i.e no inserts/updates/deletes into this chunk are
- * permitted.
+ * permitted. Other chunk level operations like dropping chunk etc. are also blocked.
  *
  */
 #define CHUNK_STATUS_FROZEN 4
@@ -886,6 +890,12 @@ ts_chunk_create_table(const Chunk *chunk, const Hypertable *ht, const char *tabl
 		 */
 		create_toast_table(&stmt.base, objaddr.objectId);
 
+		/*
+		 * Some options require being table owner to set for example statistics
+		 * so we have to set them before restoring security context
+		 */
+		set_attoptions(rel, objaddr.objectId);
+
 		if (uid != saved_uid)
 			SetUserIdAndSecContext(saved_uid, sec_ctx);
 	}
@@ -911,6 +921,12 @@ ts_chunk_create_table(const Chunk *chunk, const Hypertable *ht, const char *tabl
 		CreateForeignTable(&stmt, objaddr.objectId);
 
 		/*
+		 * Some options require being table owner to set for example statistics
+		 * so we have to set them before restoring security context
+		 */
+		set_attoptions(rel, objaddr.objectId);
+
+		/*
 		 * Need to restore security context to execute remote commands as the
 		 * original user
 		 */
@@ -925,8 +941,6 @@ ts_chunk_create_table(const Chunk *chunk, const Hypertable *ht, const char *tabl
 	}
 	else
 		elog(ERROR, "invalid relkind \"%c\" when creating chunk", chunk->relkind);
-
-	set_attoptions(rel, objaddr.objectId);
 
 	table_close(rel, AccessShareLock);
 
@@ -956,9 +970,8 @@ chunk_assign_data_nodes(const Chunk *chunk, const Hypertable *ht)
 
 	foreach (lc, htnodes)
 	{
-		HypertableDataNode *htnode = lfirst(lc);
-		ForeignServer *foreign_server =
-			GetForeignServerByName(NameStr(htnode->fd.node_name), false);
+		const char *dn = lfirst(lc);
+		ForeignServer *foreign_server = GetForeignServerByName(dn, false);
 		ChunkDataNode *chunk_data_node = palloc0(sizeof(ChunkDataNode));
 
 		/*
@@ -1474,6 +1487,8 @@ ts_chunk_create_for_point(const Hypertable *ht, const Point *p, const char *sche
 	 * conflicts with itself. The lock needs to be held until transaction end.
 	 */
 	LockRelationOid(ht->main_table_relid, ShareUpdateExclusiveLock);
+
+	DEBUG_WAITPOINT("chunk_create_for_point");
 
 	/*
 	 * Recheck if someone else created the chunk before we got the table
@@ -3431,6 +3446,42 @@ ts_chunk_set_frozen(Chunk *chunk)
 #endif
 }
 
+bool
+ts_chunk_unset_frozen(Chunk *chunk)
+{
+#if PG14_GE
+	return ts_chunk_clear_status(chunk, CHUNK_STATUS_FROZEN);
+#else
+	elog(ERROR, "freeze chunk supported only for PG14 or greater");
+	return false;
+#endif
+}
+
+#if PG14_GE
+/* only caller is ts_chunk_unset_frozen. This code is in PG14 block as we run into
+ * defined but unsed error in CI/CD builds for PG < 14.
+ */
+static bool
+ts_chunk_clear_status(Chunk *chunk, int32 status)
+{
+	/* only frozen status can be cleared for a frozen chunk */
+	if (status != CHUNK_STATUS_FROZEN && ts_flags_are_set_32(chunk->fd.status, CHUNK_STATUS_FROZEN))
+	{
+		/* chunk in frozen state cannot be modified */
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("cannot modify frozen chunk status"),
+				 errdetail("chunk id = %d attempt to clear status %d , current status %x ",
+						   chunk->fd.id,
+						   status,
+						   chunk->fd.status)));
+	}
+	uint32 mstatus = ts_clear_flags_32(chunk->fd.status, status);
+	chunk->fd.status = mstatus;
+	return chunk_update_status(&chunk->fd);
+}
+#endif
+
 static bool
 ts_chunk_add_status(Chunk *chunk, int32 status)
 {
@@ -3830,6 +3881,13 @@ ts_chunk_do_drop_chunks(Hypertable *ht, int64 older_than, int64 newer_than, int3
 
 		ASSERT_IS_VALID_CHUNK(&chunks[i]);
 
+		/* frozen chunks are skipped. Not dropped. */
+		if (!ts_chunk_validate_chunk_status_for_operation(chunks[i].table_id,
+														  chunks[i].fd.status,
+														  CHUNK_DROP,
+														  false /*throw_error */))
+			continue;
+
 		/* store chunk name for output */
 		schema_name = quote_identifier(chunks[i].fd.schema_name.data);
 		table_name = quote_identifier(chunks[i].fd.table_name.data);
@@ -4004,6 +4062,29 @@ ts_chunk_freeze_chunk(PG_FUNCTION_ARGS)
 }
 
 Datum
+ts_chunk_unfreeze_chunk(PG_FUNCTION_ARGS)
+{
+	Oid chunk_relid = PG_ARGISNULL(0) ? InvalidOid : PG_GETARG_OID(0);
+	TS_PREVENT_FUNC_IF_READ_ONLY();
+	Chunk *chunk = ts_chunk_get_by_relid(chunk_relid, true);
+	Assert(chunk != NULL);
+	if (chunk->relkind == RELKIND_FOREIGN_TABLE)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("operation not supported on distributed chunk or foreign table \"%s\"",
+						get_rel_name(chunk_relid))));
+	}
+	if (!ts_flags_are_set_32(chunk->fd.status, CHUNK_STATUS_FROZEN))
+		PG_RETURN_BOOL(true);
+	/* This is a previously frozen chunk. Only selects are permitted on this chunk.
+	 * This changes the status in the catalog to allow previously blocked operations.
+	 */
+	bool ret = ts_chunk_unset_frozen(chunk);
+	PG_RETURN_BOOL(ret);
+}
+
+Datum
 ts_chunk_drop_single_chunk(PG_FUNCTION_ARGS)
 {
 	Oid chunk_relid = PG_ARGISNULL(0) ? InvalidOid : PG_GETARG_OID(0);
@@ -4015,6 +4096,10 @@ ts_chunk_drop_single_chunk(PG_FUNCTION_ARGS)
 															   CurrentMemoryContext,
 															   true);
 	Assert(ch != NULL);
+	ts_chunk_validate_chunk_status_for_operation(chunk_relid,
+												 ch->fd.status,
+												 CHUNK_DROP,
+												 true /*throw_error */);
 	/* do not drop any chunk dependencies */
 	ts_chunk_drop(ch, DROP_RESTRICT, LOG);
 	PG_RETURN_BOOL(true);
@@ -4248,10 +4333,11 @@ get_chunk_operation_str(ChunkOperation cmd)
 	}
 }
 
-void
+bool
 ts_chunk_validate_chunk_status_for_operation(Oid chunk_relid, int32 chunk_status,
-											 ChunkOperation cmd)
+											 ChunkOperation cmd, bool throw_error)
 {
+	/* Handle frozen chunks */
 	if (ts_flags_are_set_32(chunk_status, CHUNK_STATUS_FROZEN))
 	{
 		/* Data modification is not permitted on a frozen chunk */
@@ -4262,17 +4348,56 @@ ts_chunk_validate_chunk_status_for_operation(Oid chunk_relid, int32 chunk_status
 			case CHUNK_UPDATE:
 			case CHUNK_COMPRESS:
 			case CHUNK_DECOMPRESS:
+			case CHUNK_DROP:
 			{
-				elog(ERROR,
-					 "%s not permitted on frozen chunk \"%s\" ",
-					 get_chunk_operation_str(cmd),
-					 get_rel_name(chunk_relid));
+				if (throw_error)
+					elog(ERROR,
+						 "%s not permitted on frozen chunk \"%s\" ",
+						 get_chunk_operation_str(cmd),
+						 get_rel_name(chunk_relid));
+				return false;
 				break;
 			}
 			default:
 				break; /*supported operations */
 		}
 	}
+	/* Handle unfrozen chunks */
+	else
+	{
+		switch (cmd)
+		{
+			/* supported operations */
+			case CHUNK_INSERT:
+			case CHUNK_DELETE:
+			case CHUNK_UPDATE:
+				break;
+			/* Only uncompressed chunks can be compressed */
+			case CHUNK_COMPRESS:
+			{
+				if (ts_flags_are_set_32(chunk_status, CHUNK_STATUS_COMPRESSED))
+					ereport((throw_error ? ERROR : NOTICE),
+							(errcode(ERRCODE_DUPLICATE_OBJECT),
+							 errmsg("chunk \"%s\" is already compressed",
+									get_rel_name(chunk_relid))));
+				return false;
+			}
+			/* Only compressed chunks can be decompressed */
+			case CHUNK_DECOMPRESS:
+			{
+				if (!ts_flags_are_set_32(chunk_status, CHUNK_STATUS_COMPRESSED))
+					ereport((throw_error ? ERROR : NOTICE),
+							(errcode(ERRCODE_DUPLICATE_OBJECT),
+							 errmsg("chunk \"%s\" is already decompressed",
+									get_rel_name(chunk_relid))));
+				return false;
+			}
+			default:
+				break;
+		}
+	}
+
+	return true;
 }
 
 Datum
@@ -4290,11 +4415,13 @@ ts_chunk_create(PG_FUNCTION_ARGS)
 /**
  * Get the chunk status.
  *
- * Values returned are documented above and is a bitwise or of the values.
+ * Values returned are documented above and is a bitwise or of the
+ * CHUNK_STATUS_XXX values.
  *
  * @see CHUNK_STATUS_DEFAULT
  * @see CHUNK_STATUS_COMPRESSED
  * @see CHUNK_STATUS_COMPRESSED_UNORDERED
+ * @see CHUNK_STATUS_FROZEN
  */
 Datum
 ts_chunk_status(PG_FUNCTION_ARGS)
@@ -4447,6 +4574,7 @@ add_foreign_table_as_chunk(Oid relid, Hypertable *parent_ht)
 	 * See: ts_chunk_constraints_add_dimension_constraints.
 	 */
 	ts_chunk_constraints_insert_metadata(chunk->constraints);
+	chunk_add_inheritance(chunk, parent_ht);
 }
 
 /* Internal API used by OSM extension. OSM table is a foreign table that is

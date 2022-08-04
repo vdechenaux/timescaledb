@@ -18,7 +18,7 @@ set(TEST_TEMPLATES_SHARED
     ordered_append_join.sql.in transparent_decompress_chunk.sql.in)
 
 if((${PG_VERSION_MAJOR} GREATER_EQUAL "14"))
-  list(APPEND TEST_FILES_SHARED memoize.sql)
+  list(APPEND TEST_FILES_SHARED compression_dml.sql memoize.sql)
 endif()
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
@@ -42,9 +42,7 @@ foreach(TEMPLATE_FILE ${TEST_TEMPLATES_SHARED})
   list(APPEND TEST_FILES_SHARED ${TEST_FILE})
 endforeach(TEMPLATE_FILE)
 
-if(DEFINED EXT_GIT_COMMIT_TAG
-   OR DEFINED EXT_GIT_COMMIT_HASH
-   OR DEFINED EXT_GIT_COMMIT_TIME)
+if(DEFINED GIT_FOUND)
   list(APPEND TEST_FILES_SHARED build_info.sql)
 endif()
 

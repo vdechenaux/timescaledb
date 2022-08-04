@@ -26,6 +26,7 @@ set client_min_messages to error;
 -- Disable SSL to get stable error output across versions. SSL adds some output
 -- that changed in PG 14.
 set timescaledb.debug_enable_ssl to off;
+
 set client_min_messages to error;
 
 -- A relatively big table on one data node
