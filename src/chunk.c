@@ -1610,7 +1610,7 @@ chunk_tuple_found(TupleInfo *ti, void *arg)
 	chunk->hypertable_relid = ts_hypertable_id_to_relid(chunk->fd.hypertable_id);
 	chunk->relkind = get_rel_relkind(chunk->table_id);
 
-	if (chunk->relkind == RELKIND_FOREIGN_TABLE)
+	if (chunk->relkind == RELKIND_FOREIGN_TABLE && chunk->fd.osm_chunk == false)
 		chunk->data_nodes = ts_chunk_data_node_scan_by_chunk_id(chunk->fd.id, ti->mctx);
 
 	return SCAN_DONE;
@@ -4550,4 +4550,68 @@ ts_chunk_attach_osm_table_chunk(PG_FUNCTION_ARGS)
 	ts_cache_release(hcache);
 
 	PG_RETURN_BOOL(ret);
+}
+
+static ScanTupleResult
+chunk_tuple_osm_chunk_found(TupleInfo *ti, void *arg)
+{
+	bool isnull;
+	Datum osm_chunk = slot_getattr(ti->slot, Anum_chunk_osm_chunk, &isnull);
+
+	Assert(!isnull);
+	bool is_osm_chunk = DatumGetBool(osm_chunk);
+
+	if (!is_osm_chunk)
+		return SCAN_CONTINUE;
+
+	int *chunk_id = (int *) arg;
+	Datum chunk_id_datum = slot_getattr(ti->slot, Anum_chunk_id, &isnull);
+	Assert(!isnull);
+	*chunk_id = DatumGetInt32(chunk_id_datum);
+	return SCAN_DONE;
+}
+
+/* get OSM chunk id associated with the hypertable */
+int
+ts_chunk_get_osm_chunk_id(int hypertable_id)
+{
+	int chunk_id = INVALID_CHUNK_ID;
+	ScanKeyData scankey[1];
+	// bool is_osm_chunk = true;
+	Catalog *catalog = ts_catalog_get();
+	// int num_found;
+	ScannerCtx scanctx = {
+		.table = catalog_get_table_id(catalog, CHUNK),
+		.index = catalog_get_index(catalog, CHUNK, CHUNK_HYPERTABLE_ID_INDEX),
+		.nkeys = 1,
+		.scankey = scankey,
+		.data = &chunk_id,
+		.filter = chunk_tuple_dropped_filter,
+		.tuple_found = chunk_tuple_osm_chunk_found,
+		.lockmode = AccessShareLock,
+		.scandirection = ForwardScanDirection,
+		//.result_mctx = mctx,
+	};
+
+	/*
+	 * Perform an index scan on hypertable ID.
+	 */
+	ScanKeyInit(&scankey[0],
+				Anum_chunk_hypertable_id_idx_hypertable_id,
+				BTEqualStrategyNumber,
+				F_INT4EQ,
+				Int32GetDatum(hypertable_id));
+	/*
+		ScanKeyInit(&scankey[0],
+					Anum_chunk_osm_chunk_idx_osm_chunk,
+					BTEqualStrategyNumber,
+					F_BOOLEQ,
+					BoolGetDatum(is_osm_chunk));
+	*/
+	// num_found = ts_scanner_scan(&scanctx);
+	ts_scanner_scan(&scanctx);
+
+	// Assert(num_found == 0 || num_found == 1);
+
+	return chunk_id;
 }
