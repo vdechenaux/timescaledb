@@ -22,6 +22,7 @@ DROP FUNCTION _timescaledb_internal.unfreeze_chunk( chunk REGCLASS);
 -- Drop dimension partition metadata table
 ALTER EXTENSION timescaledb DROP TABLE _timescaledb_catalog.dimension_partition;
 DROP TABLE IF EXISTS _timescaledb_catalog.dimension_partition;
+<<<<<<< HEAD
 DROP FUNCTION IF EXISTS timescaledb_experimental.add_policies;
 DROP FUNCTION IF EXISTS timescaledb_experimental.remove_policies;
 DROP FUNCTION IF EXISTS timescaledb_experimental.remove_all_policies;
@@ -35,3 +36,6 @@ LANGUAGE C VOLATILE STRICT;
 
 DROP VIEW IF EXISTS timescaledb_experimental.policies;
 
+-- revert chunk catalog changes
+ALTER TABLE _timescaledb_catalog.chunk DROP COLUMN osm_chunk;
+DROP INDEX IF EXISTS chunk_osm_chunk_idx;

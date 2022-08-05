@@ -4579,7 +4579,6 @@ ts_chunk_get_osm_chunk_id(int hypertable_id)
 	ScanKeyData scankey[2];
 	bool is_osm_chunk = true;
 	Catalog *catalog = ts_catalog_get();
-	int num_found;
 	ScannerCtx scanctx = {
 		.table = catalog_get_table_id(catalog, CHUNK),
 		.index = catalog_get_index(catalog, CHUNK, CHUNK_OSM_CHUNK_INDEX),
@@ -4608,7 +4607,7 @@ ts_chunk_get_osm_chunk_id(int hypertable_id)
 				F_BOOLEQ,
 				BoolGetDatum(is_osm_chunk));
 
-	num_found = ts_scanner_scan(&scanctx);
+	int num_found = ts_scanner_scan(&scanctx);
 
 	Assert(num_found == 0 || num_found == 1);
 
