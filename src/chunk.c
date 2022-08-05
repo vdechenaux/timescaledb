@@ -4576,14 +4576,14 @@ int
 ts_chunk_get_osm_chunk_id(int hypertable_id)
 {
 	int chunk_id = INVALID_CHUNK_ID;
-	ScanKeyData scankey[1];
-	// bool is_osm_chunk = true;
+	ScanKeyData scankey[2];
+	bool is_osm_chunk = true;
 	Catalog *catalog = ts_catalog_get();
-	// int num_found;
+	int num_found;
 	ScannerCtx scanctx = {
 		.table = catalog_get_table_id(catalog, CHUNK),
-		.index = catalog_get_index(catalog, CHUNK, CHUNK_HYPERTABLE_ID_INDEX),
-		.nkeys = 1,
+		.index = catalog_get_index(catalog, CHUNK, CHUNK_OSM_CHUNK_INDEX),
+		.nkeys = 2,
 		.scankey = scankey,
 		.data = &chunk_id,
 		.filter = chunk_tuple_dropped_filter,
@@ -4594,24 +4594,23 @@ ts_chunk_get_osm_chunk_id(int hypertable_id)
 	};
 
 	/*
-	 * Perform an index scan on hypertable ID.
+	 * Perform an index scan on hypertable ID + osm_chunk
 	 */
 	ScanKeyInit(&scankey[0],
-				Anum_chunk_hypertable_id_idx_hypertable_id,
+				Anum_chunk_osm_chunk_idx_hypertable_id,
 				BTEqualStrategyNumber,
 				F_INT4EQ,
 				Int32GetDatum(hypertable_id));
-	/*
-		ScanKeyInit(&scankey[0],
-					Anum_chunk_osm_chunk_idx_osm_chunk,
-					BTEqualStrategyNumber,
-					F_BOOLEQ,
-					BoolGetDatum(is_osm_chunk));
-	*/
-	// num_found = ts_scanner_scan(&scanctx);
-	ts_scanner_scan(&scanctx);
 
-	// Assert(num_found == 0 || num_found == 1);
+	ScanKeyInit(&scankey[1],
+				Anum_chunk_osm_chunk_idx_osm_chunk,
+				BTEqualStrategyNumber,
+				F_BOOLEQ,
+				BoolGetDatum(is_osm_chunk));
+
+	num_found = ts_scanner_scan(&scanctx);
+
+	Assert(num_found == 0 || num_found == 1);
 
 	return chunk_id;
 }
