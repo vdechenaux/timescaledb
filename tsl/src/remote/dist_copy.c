@@ -386,24 +386,27 @@ flush_active_connections(const CopyConnectionState *state)
 					(errmsg("could not end remote COPY"),
 					 errdetail("%s", PQerrorMessage(pg_conn))));
 		}
-
-		remote_connection_set_status(conn, CONN_PROCESSING);
 	}
 
 	/*
-	 * First, concurrently flush the remaining write buffers to the remote
-	 * servers. Then, read out the CopyEnd response. It might also be delayed
-	 * while the server is processing the received data.
+	 * We might have some COPY data and EndCopy message remaining in the write
+	 * buffers. Flush it to the data nodes. Then, read out the CopyEnd
+	 * response, which might be delayed until the data node finishes processing
+	 * the received data.
+	 * Loop to do this for all data nodes concurrently.
+	 */
+	/*
+	 * The connections that we are going to flush on the current iteration.
 	 */
 	List *to_flush = list_copy(to_end_copy);
 	/*
-	 * The connections that were busy on this step and that we have to flush
-	 * again.
+	 * The connections that were busy on the current iteration and that we have
+	 * to wait for.
 	 */
-	List *to_flush_next = NIL;
+	List *busy_connections = NIL;
 	/*
-	 * Parallel list of what we have to wait for (read/write) for each
-	 * connection.
+	 * List of what type of event we have to wait for (read/write) for each
+	 * busy connection. Parallel to `busy_connections`.
 	 */
 	List *wait_events = NIL;
 	for (;;)
@@ -433,9 +436,8 @@ flush_active_connections(const CopyConnectionState *state)
 			{
 				/* Busy. */
 				Assert(res == 1);
-				to_flush_next = lappend(to_flush_next, conn);
+				busy_connections = lappend(busy_connections, conn);
 				wait_events = lappend_int(wait_events, WL_SOCKET_WRITEABLE);
-				fprintf(stderr, "wait for writable socket!!!!\n");
 				continue;
 			}
 
@@ -451,7 +453,7 @@ flush_active_connections(const CopyConnectionState *state)
 			if (PQisBusy(pg_conn))
 			{
 				/* Busy. */
-				to_flush_next = lappend(to_flush_next, conn);
+				busy_connections = lappend(busy_connections, conn);
 				wait_events = lappend_int(wait_events, WL_SOCKET_READABLE);
 				continue;
 			}
@@ -459,7 +461,7 @@ flush_active_connections(const CopyConnectionState *state)
 			/* Hooray, done with this connection. */
 		}
 
-		if (list_length(to_flush_next) == 0)
+		if (list_length(busy_connections) == 0)
 		{
 			/* Flushed everything. */
 			break;
@@ -470,11 +472,11 @@ flush_active_connections(const CopyConnectionState *state)
 		 * Postgres API doesn't allow to remove a socket from the wait event,
 		 * and it's level-triggered, so we have to recreate the set each time.
 		 */
-		WaitEventSet *set = CreateWaitEventSet(CurrentMemoryContext, list_length(to_flush_next));
+		WaitEventSet *set = CreateWaitEventSet(CurrentMemoryContext, list_length(busy_connections));
 		ListCell *set_cell;
 		ListCell *events_cell;
-		Assert(list_length(to_flush_next) == list_length(wait_events));
-		forboth (set_cell, to_flush_next, events_cell, wait_events)
+		Assert(list_length(busy_connections) == list_length(wait_events));
+		forboth (set_cell, busy_connections, events_cell, wait_events)
 		{
 			TSConnection *conn = lfirst(set_cell);
 			PGconn *pg_conn = remote_connection_get_pg_conn(conn);
@@ -494,24 +496,29 @@ flush_active_connections(const CopyConnectionState *state)
 
 		/*
 		 * The possible results are:
-		 * `0` --  Timeout. Just retry the flush, it will cause errors.
+		 * `0` -- Timeout. Just retry the flush, it will report errors in case
+		 *        there are any.
 		 * `1` -- We have successfully waited for something, we don't care,
-		 * just continue to flush the entire list.
+		 *        just continue flushing the rest of the list.
 		 */
 		Assert(wait_result == 0 || wait_result == 1);
 
 		FreeWaitEventSet(set);
 
-		List *tmp = to_flush_next;
-		to_flush_next = to_flush;
+		/*
+		 * Repeat the procedure for all the connections that were busy.
+		 */
+		List *tmp = busy_connections;
+		busy_connections = to_flush;
 		to_flush = tmp;
 
-		to_flush_next = list_truncate(to_flush_next, 0);
+		busy_connections = list_truncate(busy_connections, 0);
 		wait_events = list_truncate(wait_events, 0);
 	}
 
 	/*
-	 * 3. Clean up the connections (this isn't viable! FIXME)
+	 * Switch the connections back into blocking mode because that's what the
+	 * non-COPY code expects.
 	 */
 	ListCell *lc;
 	foreach (lc, to_end_copy)
@@ -519,15 +526,6 @@ flush_active_connections(const CopyConnectionState *state)
 		TSConnection *conn = lfirst(lc);
 		PGconn *pg_conn = remote_connection_get_pg_conn(conn);
 
-		/*
-		 * Mark connection as idle in any case, to prevent sticky error state.
-		 */
-		remote_connection_set_status(conn, CONN_IDLE);
-
-		/*
-		 * Switch the connection back into blocking mode because that's what the
-		 * non-COPY code expects.
-		 */
 		if (PQsetnonblocking(pg_conn, 0))
 		{
 			ereport(ERROR,
@@ -537,16 +535,12 @@ flush_active_connections(const CopyConnectionState *state)
 	}
 
 	/*
-	 * 4. Verify the EndCopy result.
+	 * Verify that the copy has successfully finished on each connection.
 	 */
 	foreach (lc, to_end_copy)
 	{
 		TSConnection *conn = lfirst(lc);
 		PGconn *pg_conn = remote_connection_get_pg_conn(conn);
-
-		/*
-		 * Verify that the copy has ended.
-		 */
 		PGresult *res = PQgetResult(pg_conn);
 		if (res == NULL)
 		{
@@ -568,6 +562,17 @@ flush_active_connections(const CopyConnectionState *state)
 							PQresultStatus(res)),
 					 errdetail("%s", PQerrorMessage(pg_conn))));
 		}
+	}
+
+	/*
+	 * Mark the connections as idle. If an error occurs before this, the
+	 * connections are going to be still marked as CONN_COPY_IN, and the
+	 * remote_connection_end_copy() will bring each connection to a valid state.
+	 */
+	foreach (lc, to_end_copy)
+	{
+		TSConnection *conn = (TSConnection *) lfirst(lc);
+		remote_connection_set_status(conn, CONN_IDLE);
 	}
 
 	list_free(to_end_copy);

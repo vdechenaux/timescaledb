@@ -2310,7 +2310,10 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 	if (res == NULL || PQresultStatus(res) != PGRES_COPY_IN)
 	{
 		remote_connection_set_status(conn, res == NULL ? CONN_IDLE : CONN_PROCESSING);
-		elog(ERROR, "connection marked as CONN_COPY_IN, but no COPY is in progress");
+		return fill_simple_error(err,
+								 ERRCODE_INTERNAL_ERROR,
+								 "connection marked as CONN_COPY_IN, but no COPY is in progress",
+								 conn);
 	}
 
 	if (conn->binary_copy && !send_end_binary_copy_data(conn, err))
