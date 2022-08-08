@@ -64,6 +64,7 @@ INSERT INTO _timescaledb_catalog._tmp_chunk
    ORDER BY id, hypertable_id ;
 
 DROP TABLE _timescaledb_catalog.chunk;
+
 ALTER TABLE _timescaledb_catalog._tmp_chunk RENAME TO chunk;
 
 --now create constraints and indexes on the catalog chunk table
@@ -80,3 +81,5 @@ CREATE INDEX chunk_hypertable_id_idx ON _timescaledb_catalog.chunk (hypertable_i
 CREATE INDEX chunk_compressed_chunk_id_idx ON _timescaledb_catalog.chunk (compressed_chunk_id);
 CREATE INDEX chunk_osm_chunk_idx ON _timescaledb_catalog.chunk (hypertable_id, osm_chunk);
 
+SELECT pg_catalog.pg_extension_config_dump('_timescaledb_catalog.chunk', '');
+GRANT SELECT ON TABLE _timescaledb_catalog.chunk TO PUBLIC;
