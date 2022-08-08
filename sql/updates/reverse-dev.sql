@@ -36,6 +36,47 @@ LANGUAGE C VOLATILE STRICT;
 
 DROP VIEW IF EXISTS timescaledb_experimental.policies;
 
--- revert chunk catalog changes
-ALTER TABLE _timescaledb_catalog.chunk DROP COLUMN osm_chunk;
-DROP INDEX IF EXISTS chunk_osm_chunk_idx;
+--
+-- Rebuild the catalog table `_timescaledb_catalog.chunk`
+--
+-- We need to recreate the catalog from scratch because when we drop a column
+-- Postgres marks `pg_attribute.attisdropped=TRUE` instead of removing it from
+-- the `pg_catalog.pg_attribute` table.
+--
+-- If we downgrade and upgrade the extension without rebuilding the catalog table it
+-- will mess up `pg_attribute.attnum` and we will end up with issues when trying
+-- to update data in those catalog tables.
+
+CREATE TABLE _timescaledb_catalog._tmp_chunk (
+   LIKE _timescaledb_catalog.chunk
+   INCLUDING ALL
+   --create indexes and constraints with the correct names later
+   EXCLUDING INDEXES
+   EXCLUDING CONSTRAINTS
+);
+
+INSERT INTO _timescaledb_catalog._tmp_chunk
+   SELECT id, hypertable_id,
+          schema_name, table_name
+          compressed_chunk_id ,
+          dropped,
+          status
+   ORDER BY id, hypertable_id ;
+
+DROP TABLE _timescaledb_catalog.chunk;
+ALTER TABLE _timescaledb_catalog._tmp_chunk RENAME TO chunk;
+
+--now create constraints and indexes on the catalog chunk table
+ALTER TABLE _timescaledb_catalog.chunk
+ADD CONSTRAINT chunk_pkey PRIMARY KEY (id);
+ALTER TABLE _timescaledb_catalog.chunk
+ADD  CONSTRAINT chunk_schema_name_table_name_key UNIQUE (schema_name, table_name);
+ALTER TABLE _timescaledb_catalog.chunk
+ADD  CONSTRAINT chunk_compressed_chunk_id_fkey FOREIGN KEY (compressed_chunk_id) REFERENCES _timescaledb_catalog.chunk (id);
+ALTER TABLE _timescaledb_catalog.chunk
+ADD  CONSTRAINT chunk_hypertable_id_fkey FOREIGN KEY (hypertable_id) REFERENCES _timescaledb_catalog.hypertable (id);
+
+CREATE INDEX chunk_hypertable_id_idx ON _timescaledb_catalog.chunk (hypertable_id);
+CREATE INDEX chunk_compressed_chunk_id_idx ON _timescaledb_catalog.chunk (compressed_chunk_id);
+CREATE INDEX chunk_osm_chunk_idx ON _timescaledb_catalog.chunk (hypertable_id, osm_chunk);
+
