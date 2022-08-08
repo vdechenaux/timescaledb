@@ -186,7 +186,7 @@ fill_simple_error(TSConnectionError *err, int errcode, const char *errmsg, const
 	err->errcode = errcode;
 	err->msg = errmsg;
 	err->host = pstrdup(PQhost(conn->pg_conn));
-	err->nodename = pstrdup(NameStr(conn->node_name));
+	err->nodename = pstrdup(remote_connection_node_name(conn));
 
 	return false;
 }
@@ -858,6 +858,13 @@ remote_connection_get_status(const TSConnection *conn)
 const char *
 remote_connection_node_name(const TSConnection *conn)
 {
+#ifndef NDEBUG
+	const char * elide_node_name = GetConfigOption("timescaledb.elide_data_node_name_in_errors", true, false);
+	if (elide_node_name && strcmp(elide_node_name, "on") == 0)
+	{
+		return "<elided node name>";
+	}
+#endif
 	return NameStr(conn->node_name);
 }
 
