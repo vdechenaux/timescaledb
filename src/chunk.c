@@ -4609,7 +4609,12 @@ ts_chunk_get_osm_chunk_id(int hypertable_id)
 
 	int num_found = ts_scanner_scan(&scanctx);
 
-	Assert(num_found == 0 || num_found == 1);
+	if (num_found > 1)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_TS_INTERNAL_ERROR),
+				 errmsg("More than 1 OSM chunk found for hypertable (%d)", hypertable_id)));
+	}
 
 	return chunk_id;
 }
