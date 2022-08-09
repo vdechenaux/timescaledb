@@ -13,6 +13,6 @@ DROP FUNCTION IF EXISTS @extschema@.remove_continuous_aggregate_policy(REGCLASS,
 
 -- add a new column to chunk catalog table 
 ALTER TABLE _timescaledb_catalog.chunk ADD COLUMN  osm_chunk boolean NOT NULL DEFAULT FALSE;
-UPDATE timescaledb_catalog.chunk SET osm_chunk = FALSE;
+UPDATE _timescaledb_catalog.chunk SET osm_chunk = FALSE;
 
 CREATE INDEX chunk_osm_chunk_idx ON _timescaledb_catalog.chunk (hypertable_id, osm_chunk);
