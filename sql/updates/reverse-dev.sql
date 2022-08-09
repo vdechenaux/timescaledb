@@ -61,6 +61,7 @@ INSERT INTO _timescaledb_catalog._tmp_chunk
           compressed_chunk_id ,
           dropped,
           status
+   FROM _timescaledb_catalog.chunk
    ORDER BY id, hypertable_id ;
 
 DROP TABLE _timescaledb_catalog.chunk;
