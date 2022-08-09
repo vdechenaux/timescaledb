@@ -859,8 +859,8 @@ const char *
 remote_connection_node_name(const TSConnection *conn)
 {
 #ifndef NDEBUG
-	const char * elide_node_name =
-			GetConfigOption("timescaledb.elide_data_node_name_in_errors", true, false);
+	const char *elide_node_name =
+		GetConfigOption("timescaledb.elide_data_node_name_in_errors", true, false);
 	if (elide_node_name && strcmp(elide_node_name, "on") == 0)
 	{
 		return "<elided node name>";
