@@ -64,6 +64,7 @@ INSERT INTO _timescaledb_catalog._tmp_chunk
    ORDER BY id, hypertable_id ;
 
 DROP TABLE _timescaledb_catalog.chunk;
+ALTER EXTENSION timescaledb DROP TABLE _timescaledb_catalog.chunk;
 
 ALTER TABLE _timescaledb_catalog._tmp_chunk RENAME TO chunk;
 
