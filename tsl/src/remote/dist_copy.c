@@ -368,15 +368,40 @@ flush_active_connections(const CopyConnectionState *state)
 		Assert(PQisnonblocking(pg_conn));
 
 		PGresult *res = PQgetResult(pg_conn);
-		if (res == NULL || PQresultStatus(res) != PGRES_COPY_IN)
+		if (res == NULL)
 		{
 			/*
-			 * No actual COPY on the connection, this is an internal program error.
+			 * No activity on the connection while we're expecting COPY. This
+			 * is probably an internal program error.
 			 */
 			elog(ERROR,
-				 "connection marked as CONN_COPY_IN, but no COPY is in progress when flushing data "
-				 "nodes");
+				 "the connection is expected to be in PGRES_COPY_IN status, but it has no activity (when flushing data)");
 		}
+
+		if (PQresultStatus(res) != PGRES_COPY_IN)
+		{
+			char *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+			if (sqlstate != NULL && strcmp(sqlstate, "00000") == 0)
+			{
+				/*
+				 * An error have occurred.
+				 */
+				TSConnectionError err;
+				remote_connection_get_result_error(res, &err);
+				remote_connection_error_elog(&err, ERROR);
+			}
+
+			/*
+			 * No erroneous SQLSTATE, but at the same time the connection is
+			 * not in PGRES_COPY_IN status. This must be a logic error.
+			 */
+			elog(ERROR,
+				 "the connection is expected to be in PGRES_COPY_IN status, but instead the status is %d  (when flushing data)",
+				 PQresultStatus(res));
+		}
+
+		/* The connection is in PGRES_COPY_IN status, as expected. */
+		Assert(res != NULL && PQresultStatus(res) == PGRES_COPY_IN);
 
 		to_end_copy = lappend(to_end_copy, conn);
 
