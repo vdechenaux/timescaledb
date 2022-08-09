@@ -859,7 +859,8 @@ const char *
 remote_connection_node_name(const TSConnection *conn)
 {
 #ifndef NDEBUG
-	const char * elide_node_name = GetConfigOption("timescaledb.elide_data_node_name_in_errors", true, false);
+	const char * elide_node_name =
+			GetConfigOption("timescaledb.elide_data_node_name_in_errors", true, false);
 	if (elide_node_name && strcmp(elide_node_name, "on") == 0)
 	{
 		return "<elided node name>";
@@ -2304,16 +2305,14 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 	 * protocol itself because it needs to work with multiple connections
 	 * concurrently. The remote server might leave the COPY mode for own
 	 * reasons, as well. If we discover this, update our info with the actual
-	 * status, but still report the error.
+	 * status. Don't report this as error since we're probably in an error
+	 * handling path already.
 	 */
 	res = PQgetResult(conn->pg_conn);
 	if (res == NULL || PQresultStatus(res) != PGRES_COPY_IN)
 	{
 		remote_connection_set_status(conn, res == NULL ? CONN_IDLE : CONN_PROCESSING);
-		return fill_simple_error(err,
-								 ERRCODE_INTERNAL_ERROR,
-								 "connection marked as CONN_COPY_IN, but no COPY is in progress",
-								 conn);
+		return true;
 	}
 
 	if (conn->binary_copy && !send_end_binary_copy_data(conn, err))
