@@ -83,6 +83,7 @@ static bool ts_chunk_add_status(Chunk *chunk, int32 status);
 static bool ts_chunk_clear_status(Chunk *chunk, int32 status);
 #endif
 
+#define IS_OSM_CHUNK(chunk) ((chunk)->fd.osm_chunk == true)
 static const char *
 DatumGetNameString(Datum datum)
 {
@@ -1050,8 +1051,7 @@ chunk_create_table_constraints(const Chunk *chunk)
 								chunk->hypertable_relid,
 								chunk->fd.hypertable_id);
 
-	if (chunk->relkind == RELKIND_RELATION &&
-		!ts_flags_are_set_32(chunk->fd.status, CHUNK_STATUS_FOREIGN))
+	if (chunk->relkind == RELKIND_RELATION && !IS_OSM_CHUNK(chunk))
 	{
 		ts_trigger_create_all_on_chunk(chunk);
 		ts_chunk_index_create_all(chunk->fd.hypertable_id,
@@ -1610,7 +1610,7 @@ chunk_tuple_found(TupleInfo *ti, void *arg)
 	chunk->hypertable_relid = ts_hypertable_id_to_relid(chunk->fd.hypertable_id);
 	chunk->relkind = get_rel_relkind(chunk->table_id);
 
-	if (chunk->relkind == RELKIND_FOREIGN_TABLE && chunk->fd.osm_chunk == false)
+	if (chunk->relkind == RELKIND_FOREIGN_TABLE && !IS_OSM_CHUNK(chunk))
 		chunk->data_nodes = ts_chunk_data_node_scan_by_chunk_id(chunk->fd.id, ti->mctx);
 
 	return SCAN_DONE;
@@ -4585,7 +4585,6 @@ ts_chunk_get_osm_chunk_id(int hypertable_id)
 		.nkeys = 2,
 		.scankey = scankey,
 		.data = &chunk_id,
-		.filter = chunk_tuple_dropped_filter,
 		.tuple_found = chunk_tuple_osm_chunk_found,
 		.lockmode = AccessShareLock,
 		.scandirection = ForwardScanDirection,
