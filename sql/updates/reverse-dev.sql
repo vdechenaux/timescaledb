@@ -75,6 +75,7 @@ DROP VIEW IF EXISTS timescaledb_information.hypertables;
 DROP VIEW IF EXISTS timescaledb_information.chunks;
 DROP VIEW IF EXISTS _timescaledb_internal.hypertable_chunk_local_size;
 DROP VIEW IF EXISTS _timescaledb_internal.compressed_chunk_stats;
+DROP VIEW IF EXISTS timescaledb_experimental.chunk_replication_status;
 
 ALTER EXTENSION timescaledb DROP TABLE _timescaledb_catalog.chunk;
 ALTER EXTENSION timescaledb DROP SEQUENCE _timescaledb_catalog.chunk_id_seq;
