@@ -67,6 +67,8 @@ ALTER TABLE _timescaledb_catalog.compression_chunk_size DROP CONSTRAINT
 compression_chunk_size_chunk_id_fkey;
 ALTER TABLE _timescaledb_catalog.compression_chunk_size DROP CONSTRAINT 
 compression_chunk_size_compressed_chunk_id_fkey;
+ALTER TABLE _timescaledb_catalog.chunk_copy_operation DROP CONSTRAINT
+chunk_copy_operation_chunk_id_fkey;
 
 --drop dependent views
 DROP VIEW IF EXISTS timescaledb_information.hypertables;
@@ -129,6 +131,8 @@ REFERENCES _timescaledb_catalog.chunk(id) ON DELETE CASCADE;
 ALTER TABLE _timescaledb_catalog.compression_chunk_size ADD CONSTRAINT
 compression_chunk_size_compressed_chunk_id_fkey FOREIGN KEY (compressed_chunk_id) 
 REFERENCES _timescaledb_catalog.chunk(id) ON DELETE CASCADE; 
+ALTER TABLE _timescaledb_catalog.chunk_copy_operation ADD CONSTRAINT
+chunk_copy_operation_chunk_id_fkey FOREIGN KEY (chunk_id) REFERENCES _timescaledb_catalog.chunk (id) ON DELETE CASCADE;
 
 --cleanup
 DROP TABLE _timescaledb_internal.chunk_tmp;
