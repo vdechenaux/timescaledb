@@ -85,14 +85,16 @@ CREATE SEQUENCE _timescaledb_catalog.chunk_id_seq MINVALUE 1;
 
 -- now create table without self referential foreign key
 CREATE TABLE _timescaledb_catalog.chunk (
-  id integer PRIMARY KEY DEFAULT nextval('_timescaledb_catalog.chunk_id_seq'),
-  hypertable_id int NOT NULL REFERENCES _timescaledb_catalog.hypertable (id),
+  id integer NOT NULL DEFAULT nextval('_timescaledb_catalog.chunk_id_seq'),
+  hypertable_id int NOT NULL,
   schema_name name NOT NULL,
   table_name name NOT NULL,
   compressed_chunk_id integer ,
   dropped boolean NOT NULL DEFAULT FALSE,
   status integer NOT NULL DEFAULT 0,
-  UNIQUE (schema_name, table_name)
+  -- table constraints
+  CONSTRAINT chunk_pkey PRIMARY KEY (id),
+  CONSTRAINT chunk_schema_name_table_name_key UNIQUE (schema_name, table_name)
 );
 
 INSERT INTO _timescaledb_catalog.chunk
@@ -112,6 +114,12 @@ SELECT setval('_timescaledb_catalog.chunk_id_seq', last_value, is_called) FROM _
 -- add self referential foreign key
 ALTER TABLE _timescaledb_catalog.chunk ADD CONSTRAINT chunk_compressed_chunk_id_fkey FOREIGN KEY ( compressed_chunk_id )
  REFERENCES _timescaledb_catalog.chunk( id );
+
+--add foreign key constraint 
+ALTER TABLE _timescaledb_catalog.chunk 
+      ADD CONSTRAINT chunk_hypertable_id_fkey 
+      FOREIGN KEY (hypertable_id) REFERENCES _timescaledb_catalog.hypertable (id);
+
 SELECT pg_catalog.pg_extension_config_dump('_timescaledb_catalog.chunk', '');
 SELECT pg_catalog.pg_extension_config_dump('_timescaledb_catalog.chunk_id_seq', '');
 

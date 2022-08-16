@@ -4595,16 +4595,15 @@ ts_chunk_get_osm_chunk_id(int hypertable_id)
 	 * Perform an index scan on hypertable ID + osm_chunk
 	 */
 	ScanKeyInit(&scankey[0],
-				Anum_chunk_osm_chunk_idx_hypertable_id,
-				BTEqualStrategyNumber,
-				F_INT4EQ,
-				Int32GetDatum(hypertable_id));
-
-	ScanKeyInit(&scankey[1],
 				Anum_chunk_osm_chunk_idx_osm_chunk,
 				BTEqualStrategyNumber,
 				F_BOOLEQ,
 				BoolGetDatum(is_osm_chunk));
+	ScanKeyInit(&scankey[1],
+				Anum_chunk_osm_chunk_idx_hypertable_id,
+				BTEqualStrategyNumber,
+				F_INT4EQ,
+				Int32GetDatum(hypertable_id));
 
 	int num_found = ts_scanner_scan(&scanctx);
 

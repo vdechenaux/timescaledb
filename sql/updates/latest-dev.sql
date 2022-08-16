@@ -20,4 +20,4 @@ ALTER TABLE _timescaledb_catalog.chunk
 ALTER TABLE _timescaledb_catalog.chunk 
   ALTER COLUMN  osm_chunk SET DEFAULT FALSE;
 
-CREATE INDEX chunk_osm_chunk_idx ON _timescaledb_catalog.chunk (hypertable_id, osm_chunk);
+CREATE INDEX chunk_osm_chunk_idx ON _timescaledb_catalog.chunk (osm_chunk, hypertable_id);
