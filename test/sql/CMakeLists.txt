@@ -26,6 +26,7 @@ set(TEST_FILES
     information_views.sql
     insert_many.sql
     insert_single.sql
+    insert_returning.sql
     lateral.sql
     misc.sql
     parallel.sql
@@ -89,6 +90,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     TEST_FILES
     bgw_launcher.sql
     c_unit_tests.sql
+    copy_memory_usage.sql
     guc_options.sql
     loader.sql
     metadata.sql
@@ -97,7 +99,9 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     pg_dump.sql
     symbol_conflict.sql
     test_utils.sql)
-  # if(USE_TELEMETRY) list(APPEND TEST_FILES telemetry.sql) endif()
+  if(USE_TELEMETRY)
+    list(APPEND TEST_FILES telemetry.sql)
+  endif()
 endif(CMAKE_BUILD_TYPE MATCHES Debug)
 
 if((${PG_VERSION_MAJOR} GREATER_EQUAL "13"))

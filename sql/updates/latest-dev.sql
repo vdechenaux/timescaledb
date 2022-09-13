@@ -1,11 +1,8 @@
-DROP FUNCTION IF EXISTS @extschema@.add_retention_policy(REGCLASS, "any", BOOL);
-DROP FUNCTION IF EXISTS @extschema@.add_compression_policy(REGCLASS, "any", BOOL);
-DROP FUNCTION IF EXISTS @extschema@.detach_data_node;
-CREATE TABLE _timescaledb_catalog.dimension_partition (
-  dimension_id integer NOT NULL REFERENCES _timescaledb_catalog.dimension (id) ON DELETE CASCADE,
-  range_start bigint NOT NULL,
-  data_nodes name[] NULL,
-  UNIQUE (dimension_id, range_start)
-);
-SELECT pg_catalog.pg_extension_config_dump('_timescaledb_catalog.dimension_partition', '');
-GRANT SELECT ON _timescaledb_catalog.dimension_partition TO PUBLIC;
+
+-- gapfill with timezone support
+CREATE FUNCTION @extschema@.time_bucket_gapfill(bucket_width INTERVAL, ts TIMESTAMPTZ, timezone TEXT, start TIMESTAMPTZ=NULL, finish TIMESTAMPTZ=NULL) RETURNS TIMESTAMPTZ
+AS '@MODULE_PATHNAME@', 'ts_gapfill_timestamptz_timezone_bucket' LANGUAGE C VOLATILE PARALLEL SAFE;
+
+ALTER TABLE _timescaledb_catalog.compression_chunk_size DROP CONSTRAINT compression_chunk_size_pkey;
+ALTER TABLE _timescaledb_catalog.compression_chunk_size ADD CONSTRAINT compression_chunk_size_pkey PRIMARY KEY(chunk_id);
+

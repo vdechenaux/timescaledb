@@ -407,6 +407,7 @@ enum Anum_chunk
 	Anum_chunk_compressed_chunk_id,
 	Anum_chunk_dropped,
 	Anum_chunk_status,
+	Anum_chunk_osm_chunk,
 	_Anum_chunk_max,
 };
 
@@ -421,6 +422,7 @@ typedef struct FormData_chunk
 	int32 compressed_chunk_id;
 	bool dropped;
 	int32 status;
+	bool osm_chunk;
 } FormData_chunk;
 
 typedef FormData_chunk *Form_chunk;
@@ -431,6 +433,7 @@ enum
 	CHUNK_HYPERTABLE_ID_INDEX,
 	CHUNK_SCHEMA_NAME_INDEX,
 	CHUNK_COMPRESSED_CHUNK_ID_INDEX,
+	CHUNK_OSM_CHUNK_INDEX,
 	_MAX_CHUNK_INDEX,
 };
 
@@ -453,6 +456,12 @@ enum Anum_chunk_schema_name_idx
 {
 	Anum_chunk_schema_name_idx_schema_name = 1,
 	Anum_chunk_schema_name_idx_table_name,
+};
+
+enum Anum_chunk_osm_chunk_idx
+{
+	Anum_chunk_osm_chunk_idx_osm_chunk = 1,
+	Anum_chunk_osm_chunk_idx_hypertable_id,
 };
 
 /************************************
@@ -695,6 +704,8 @@ enum Anum_bgw_job
 	Anum_bgw_job_scheduled,
 	Anum_bgw_job_hypertable_id,
 	Anum_bgw_job_config,
+	Anum_bgw_job_check_schema,
+	Anum_bgw_job_check_name,
 	_Anum_bgw_job_max,
 };
 
@@ -714,6 +725,8 @@ typedef struct FormData_bgw_job
 	bool scheduled;
 	int32 hypertable_id;
 	Jsonb *config;
+	NameData check_schema;
+	NameData check_name;
 } FormData_bgw_job;
 
 typedef FormData_bgw_job *Form_bgw_job;
@@ -1214,7 +1227,6 @@ enum
 typedef enum Anum_compression_chunk_size_pkey
 {
 	Anum_compression_chunk_size_pkey_chunk_id = 1,
-	Anum_compression_chunk_size_pkey_compressed_chunk_id,
 	_Anum_compression_chunk_size_pkey_max,
 } Anum_compression_chunk_size_pkey;
 

@@ -98,7 +98,9 @@ SELECT j.id AS job_id,
   j.config,
   js.next_start,
   ht.schema_name AS hypertable_schema,
-  ht.table_name AS hypertable_name
+  ht.table_name AS hypertable_name,
+  j.check_schema,
+  j.check_name
 FROM _timescaledb_config.bgw_job j
   LEFT JOIN _timescaledb_catalog.hypertable ht ON ht.id = j.hypertable_id
   LEFT JOIN _timescaledb_internal.bgw_job_stat js ON js.job_id = j.id;
@@ -236,7 +238,7 @@ FROM (
       array_agg(node_name ORDER BY node_name) AS node_list
     FROM _timescaledb_catalog.chunk_data_node
     GROUP BY chunk_id) chdn ON srcch.id = chdn.chunk_id
-  WHERE srcch.dropped IS FALSE
+  WHERE srcch.dropped IS FALSE AND srcch.osm_chunk IS FALSE
     AND ht.compression_state != 2 ) finalq
 WHERE chunk_dimension_num = 1;
 

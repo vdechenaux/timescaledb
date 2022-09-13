@@ -185,6 +185,7 @@ CREATE TABLE _timescaledb_catalog.chunk (
   compressed_chunk_id integer ,
   dropped boolean NOT NULL DEFAULT FALSE,
   status integer NOT NULL DEFAULT 0,
+  osm_chunk boolean NOT NULL DEFAULT FALSE,
   -- table constraints
   CONSTRAINT chunk_pkey PRIMARY KEY (id),
   CONSTRAINT chunk_schema_name_table_name_key UNIQUE (schema_name, table_name),
@@ -194,8 +195,12 @@ CREATE TABLE _timescaledb_catalog.chunk (
 ALTER SEQUENCE _timescaledb_catalog.chunk_id_seq OWNED BY _timescaledb_catalog.chunk.id;
 
 CREATE INDEX chunk_hypertable_id_idx ON _timescaledb_catalog.chunk (hypertable_id);
-
 CREATE INDEX chunk_compressed_chunk_id_idx ON _timescaledb_catalog.chunk (compressed_chunk_id);
+--we could use a partial index (where osm_chunk is true). However, the catalog code
+--does not work with partial/functional indexes. So we instead have a full index here.
+--Another option would be to use the status field to identify a OSM chunk. However bit
+--operations only work on varbit datatype and not integer datatype. 
+CREATE INDEX chunk_osm_chunk_idx ON _timescaledb_catalog.chunk (osm_chunk, hypertable_id);
 
 SELECT pg_catalog.pg_extension_config_dump('_timescaledb_catalog.chunk', '');
 SELECT pg_catalog.pg_extension_config_dump('_timescaledb_catalog.chunk_id_seq', '');
@@ -256,6 +261,10 @@ MINVALUE 1000;
 
 SELECT pg_catalog.pg_extension_config_dump('_timescaledb_config.bgw_job_id_seq', '');
 
+  -- We put columns that can be null or have variable length
+  -- last. This allow us to read the important fields above in the
+  -- scheduler without materializing these fields below, which the
+  -- scheduler does not neeed.
 CREATE TABLE _timescaledb_config.bgw_job (
   id integer NOT NULL DEFAULT nextval('_timescaledb_config.bgw_job_id_seq'),
   application_name name NOT NULL,
@@ -269,6 +278,8 @@ CREATE TABLE _timescaledb_config.bgw_job (
   scheduled bool NOT NULL DEFAULT TRUE,
   hypertable_id integer,
   config jsonb,
+  check_schema name,
+  check_name name,
   -- table constraints
   CONSTRAINT bgw_job_pkey PRIMARY KEY (id),
   CONSTRAINT bgw_job_hypertable_id_fkey FOREIGN KEY (hypertable_id) REFERENCES _timescaledb_catalog.hypertable (id) ON DELETE CASCADE
@@ -447,7 +458,7 @@ CREATE TABLE _timescaledb_catalog.compression_chunk_size (
   numrows_pre_compression bigint,
   numrows_post_compression bigint,
   -- table constraints
-  CONSTRAINT compression_chunk_size_pkey PRIMARY KEY (chunk_id, compressed_chunk_id),
+  CONSTRAINT compression_chunk_size_pkey PRIMARY KEY (chunk_id),
   CONSTRAINT compression_chunk_size_chunk_id_fkey FOREIGN KEY (chunk_id) REFERENCES _timescaledb_catalog.chunk (id) ON DELETE CASCADE,
   CONSTRAINT compression_chunk_size_compressed_chunk_id_fkey FOREIGN KEY (compressed_chunk_id) REFERENCES _timescaledb_catalog.chunk (id) ON DELETE CASCADE
 );
@@ -505,6 +516,36 @@ CREATE TABLE _timescaledb_catalog.chunk_copy_operation (
   CONSTRAINT chunk_copy_operation_pkey PRIMARY KEY (operation_id),
   CONSTRAINT chunk_copy_operation_chunk_id_fkey FOREIGN KEY (chunk_id) REFERENCES _timescaledb_catalog.chunk (id) ON DELETE CASCADE
 );
+
+CREATE TABLE _timescaledb_catalog.continuous_agg_migrate_plan (
+  mat_hypertable_id integer NOT NULL,
+  start_ts TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.now(),
+  end_ts TIMESTAMPTZ,
+  -- table constraints
+  CONSTRAINT continuous_agg_migrate_plan_pkey PRIMARY KEY (mat_hypertable_id),
+  CONSTRAINT continuous_agg_migrate_plan_mat_hypertable_id_fkey FOREIGN KEY (mat_hypertable_id) REFERENCES _timescaledb_catalog.continuous_agg (mat_hypertable_id)
+);
+
+SELECT pg_catalog.pg_extension_config_dump('_timescaledb_catalog.continuous_agg_migrate_plan', '');
+
+CREATE TABLE _timescaledb_catalog.continuous_agg_migrate_plan_step (
+  mat_hypertable_id integer NOT NULL,
+  step_id serial NOT NULL,
+  status TEXT NOT NULL DEFAULT 'NOT STARTED', -- NOT STARTED, STARTED, FINISHED, CANCELED
+  start_ts TIMESTAMPTZ,
+  end_ts TIMESTAMPTZ,
+  type TEXT NOT NULL,
+  config JSONB,
+  -- table constraints
+  CONSTRAINT continuous_agg_migrate_plan_step_pkey PRIMARY KEY (mat_hypertable_id, step_id),
+  CONSTRAINT continuous_agg_migrate_plan_step_mat_hypertable_id_fkey FOREIGN KEY (mat_hypertable_id) REFERENCES _timescaledb_catalog.continuous_agg_migrate_plan (mat_hypertable_id) ON DELETE CASCADE,
+  CONSTRAINT continuous_agg_migrate_plan_step_check CHECK (start_ts <= end_ts),
+  CONSTRAINT continuous_agg_migrate_plan_step_check2 CHECK (type IN ('CREATE NEW CAGG', 'DISABLE POLICIES', 'COPY POLICIES', 'ENABLE POLICIES', 'SAVE WATERMARK', 'REFRESH NEW CAGG', 'COPY DATA', 'OVERRIDE CAGG', 'DROP OLD CAGG'))
+);
+
+SELECT pg_catalog.pg_extension_config_dump('_timescaledb_catalog.continuous_agg_migrate_plan_step', '');
+
+SELECT pg_catalog.pg_extension_config_dump(pg_get_serial_sequence('_timescaledb_catalog.continuous_agg_migrate_plan_step', 'step_id'), '');
 
 -- Set table permissions
 -- We need to grant SELECT to PUBLIC for all tables even those not

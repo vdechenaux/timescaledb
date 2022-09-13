@@ -125,6 +125,14 @@ typedef struct CaggsInfoData
 	List *bucket_functions;
 } CaggsInfo;
 
+typedef struct CaggPolicyOffset
+{
+	Datum value;
+	Oid type;
+	bool isnull;
+	const char *name;
+} CaggPolicyOffset;
+
 extern TSDLLEXPORT const CaggsInfo ts_continuous_agg_get_all_caggs_info(int32 raw_hypertable_id);
 extern TSDLLEXPORT void ts_populate_caggs_info_from_arrays(ArrayType *mat_hypertable_ids,
 														   ArrayType *bucket_widths,
@@ -165,6 +173,8 @@ extern TSDLLEXPORT int32 ts_number_of_continuous_aggs(void);
 extern TSDLLEXPORT const Dimension *
 ts_continuous_agg_find_integer_now_func_by_materialization_id(int32 mat_htid);
 extern ContinuousAgg *ts_continuous_agg_find_userview_name(const char *schema, const char *name);
+
+extern TSDLLEXPORT void ts_continuous_agg_invalidate_chunk(Hypertable *ht, Chunk *chunk);
 
 extern TSDLLEXPORT bool ts_continuous_agg_bucket_width_variable(const ContinuousAgg *agg);
 extern TSDLLEXPORT int64 ts_continuous_agg_bucket_width(const ContinuousAgg *agg);

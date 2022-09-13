@@ -3,8 +3,8 @@
  * Please see the included NOTICE for copyright information and
  * LICENSE-TIMESCALE for a copy of the license.
  */
-#ifndef TIMESCALEDB_TSL_NODES_GAPFILL_EXEC_H
-#define TIMESCALEDB_TSL_NODES_GAPFILL_EXEC_H
+#ifndef TIMESCALEDB_TSL_NODES_GAPFILL_INTERNAL_H
+#define TIMESCALEDB_TSL_NODES_GAPFILL_INTERNAL_H
 
 #include <postgres.h>
 #include <nodes/execnodes.h>
@@ -93,9 +93,15 @@ typedef struct GapFillState
 	Plan *subplan;
 
 	Oid gapfill_typid;
+	/* arguments of the gapfill function call */
+	List *args;
+	bool have_timezone;
 	int64 gapfill_start;
 	int64 gapfill_end;
+	/* bucket width for fixed-size buckets */
 	int64 gapfill_period;
+	/* bucket width when bucketing by month */
+	Interval *gapfill_interval;
 
 	int64 next_timestamp;
 	int64 subslot_time; /* time of tuple in subslot */
@@ -119,4 +125,4 @@ Expr *gapfill_adjust_varnos(GapFillState *state, Expr *expr);
 Datum gapfill_exec_expr(GapFillState *state, Expr *expr, bool *isnull);
 int64 gapfill_datum_get_internal(Datum, Oid);
 
-#endif /* TIMESCALEDB_TSL_NODES_GAPFILL_EXEC_H */
+#endif /* TIMESCALEDB_TSL_NODES_GAPFILL_INTERNAL_H */

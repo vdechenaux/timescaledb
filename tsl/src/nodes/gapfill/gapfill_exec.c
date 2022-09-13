@@ -18,6 +18,7 @@
 #include <optimizer/clauses.h>
 #include <optimizer/optimizer.h>
 #include <utils/builtins.h>
+#include <utils/date.h>
 #include <utils/datum.h>
 #include <utils/memutils.h>
 #include <utils/lsyscache.h>
@@ -26,10 +27,11 @@
 #include <utils/typcache.h>
 
 #include <annotations.h>
-#include "nodes/gapfill/gapfill.h"
-#include "nodes/gapfill/locf.h"
-#include "nodes/gapfill/interpolate.h"
-#include "nodes/gapfill/exec.h"
+#include <compat/compat.h>
+#include "gapfill.h"
+#include "gapfill_internal.h"
+#include "locf.h"
+#include "interpolate.h"
 #include "time_bucket.h"
 
 typedef enum GapFillBoundary
@@ -139,28 +141,53 @@ gapfill_internal_get_datum(int64 value, Oid type)
 	}
 }
 
-static inline int64
-interval_to_usec(Interval *interval)
+static Expr *
+get_start_arg(GapFillState *state)
 {
-	if (interval == NULL)
-		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("interval cannot be NULL")));
-	return (interval->month * DAYS_PER_MONTH * USECS_PER_DAY) + (interval->day * USECS_PER_DAY) +
-		   interval->time;
+	if (!state->have_timezone)
+		return lthird(state->args);
+	else
+		return lfourth(state->args);
+}
+
+static Expr *
+get_finish_arg(GapFillState *state)
+{
+	if (!state->have_timezone)
+		return lfourth(state->args);
+	else
+		return lfifth(state->args);
+}
+
+static Expr *
+get_timezone_arg(GapFillState *state)
+{
+	Assert(state->have_timezone);
+	return lthird(state->args);
 }
 
 static inline int64
-gapfill_period_get_internal(Oid timetype, Oid argtype, Datum arg)
+gapfill_period_get_internal(Oid timetype, Oid argtype, Datum arg, Interval **interval)
 {
 	switch (timetype)
 	{
 		case DATEOID:
-			Assert(INTERVALOID == argtype);
-			return interval_to_usec(DatumGetIntervalP(arg)) / USECS_PER_DAY;
-			break;
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
 			Assert(INTERVALOID == argtype);
-			return interval_to_usec(DatumGetIntervalP(arg));
+			Interval *interval_arg = DatumGetIntervalP(arg);
+			if (interval_arg->time < 0 || interval_arg->day < 0 || interval_arg->month < 0 ||
+				interval_arg->time + interval_arg->day + interval_arg->month == 0)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("invalid time_bucket_gapfill argument: bucket_width must be "
+								"greater than 0")));
+			}
+
+			*interval = interval_arg;
+			return 0;
+
 			break;
 		case INT2OID:
 			Assert(INT2OID == argtype);
@@ -198,6 +225,8 @@ gapfill_state_create(CustomScan *cscan)
 
 	state->csstate.methods = &gapfill_state_methods;
 	state->subplan = linitial(cscan->custom_plans);
+	state->args = lfourth(cscan->custom_private);
+	state->have_timezone = list_length(state->args) == 5;
 
 	return (Node *) state;
 }
@@ -321,7 +350,23 @@ align_with_time_bucket(GapFillState *state, Expr *expr)
 				 errmsg(
 					 "invalid time_bucket_gapfill argument: start must be a simple expression")));
 
-	time_bucket->args = list_make2(linitial(time_bucket->args), expr);
+	if (state->have_timezone)
+	{
+		if (IsA(get_timezone_arg(state), Const) &&
+			castNode(Const, get_timezone_arg(state))->constisnull)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("invalid time_bucket_gapfill argument: timezone cannot be NULL")));
+		}
+
+		time_bucket->args =
+			list_make3(linitial(time_bucket->args), expr, lthird(time_bucket->args));
+	}
+	else
+	{
+		time_bucket->args = list_make2(linitial(time_bucket->args), expr);
+	}
 	value = gapfill_exec_expr(state, (Expr *) time_bucket, &isnull);
 
 	/* start expression must not evaluate to NULL */
@@ -585,6 +630,43 @@ make_const_value_for_gapfill_internal(Oid typid, int64 value)
 	return makeConst(typid, -1, InvalidOid, tce->typlen, d, false, tce->typbyval);
 }
 
+static void
+gapfill_advance_timestamp(GapFillState *state)
+{
+	Datum next;
+
+	switch (state->gapfill_typid)
+	{
+		case DATEOID:
+			next = DirectFunctionCall2(date_pl_interval,
+									   DateADTGetDatum(state->next_timestamp),
+									   IntervalPGetDatum(state->gapfill_interval));
+			next = DirectFunctionCall1(timestamp_date, next);
+			state->next_timestamp = DatumGetDateADT(next);
+			break;
+		case TIMESTAMPOID:
+			next = DirectFunctionCall2(timestamp_pl_interval,
+									   TimestampGetDatum(state->next_timestamp),
+									   IntervalPGetDatum(state->gapfill_interval));
+			state->next_timestamp = DatumGetTimestamp(next);
+			break;
+		case TIMESTAMPTZOID:
+			/*
+			 * To be consistent with time_bucket we do UTC bucketing unless
+			 * a different timezone got explicity passed to the function.
+			 */
+			next = DirectFunctionCall2(state->have_timezone ? timestamptz_pl_interval :
+															  timestamp_pl_interval,
+									   TimestampTzGetDatum(state->next_timestamp),
+									   IntervalPGetDatum(state->gapfill_interval));
+			state->next_timestamp = DatumGetTimestampTz(next);
+			break;
+		default:
+			state->next_timestamp += state->gapfill_period;
+			break;
+	}
+}
+
 /*
  * Initialize the scan state
  */
@@ -599,7 +681,6 @@ gapfill_begin(CustomScanState *node, EState *estate, int eflags)
 	 * extract arguments and to align gapfill_start
 	 */
 	FuncExpr *func = linitial(cscan->custom_private);
-	List *args = lfourth(cscan->custom_private);
 	TupleDesc tupledesc = state->csstate.ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor;
 	List *targetlist = copyObject(state->csstate.ss.ps.plan->targetlist);
 	Node *entry;
@@ -613,26 +694,28 @@ gapfill_begin(CustomScanState *node, EState *estate, int eflags)
 	state->scanslot = MakeSingleTupleTableSlot(tupledesc, &TTSOpsVirtual);
 
 	/* bucket_width */
-	if (!is_simple_expr(linitial(args)))
+	if (!is_simple_expr(linitial(state->args)))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid time_bucket_gapfill argument: bucket_width must be a simple "
 						"expression")));
 
-	arg_value = gapfill_exec_expr(state, linitial(args), &isnull);
+	arg_value = gapfill_exec_expr(state, linitial(state->args), &isnull);
 	if (isnull)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid time_bucket_gapfill argument: bucket_width cannot be NULL")));
 
-	state->gapfill_period =
-		gapfill_period_get_internal(func->funcresulttype, exprType(linitial(args)), arg_value);
+	state->gapfill_period = gapfill_period_get_internal(func->funcresulttype,
+														exprType(linitial(state->args)),
+														arg_value,
+														&state->gapfill_interval);
 
 	/*
 	 * this would error when trying to align start and stop to bucket_width as well below
 	 * but checking this explicitly here will make a nicer error message
 	 */
-	if (state->gapfill_period <= 0)
+	if (state->gapfill_period <= 0 && !state->gapfill_interval)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg(
@@ -642,7 +725,7 @@ gapfill_begin(CustomScanState *node, EState *estate, int eflags)
 	 * check if gapfill start was left out so we have to infer from WHERE
 	 * clause
 	 */
-	if (is_const_null(lthird(args)))
+	if (is_const_null(get_start_arg(state)))
 	{
 		int64 start = infer_gapfill_boundary(state, GAPFILL_START);
 		Const *expr = make_const_value_for_gapfill_internal(state->gapfill_typid, start);
@@ -655,21 +738,21 @@ gapfill_begin(CustomScanState *node, EState *estate, int eflags)
 		 * pass gapfill start through time_bucket so it is aligned with bucket
 		 * start
 		 */
-		state->gapfill_start = align_with_time_bucket(state, lthird(args));
+		state->gapfill_start = align_with_time_bucket(state, get_start_arg(state));
 	}
 	state->next_timestamp = state->gapfill_start;
 
 	/* gap fill end */
-	if (is_const_null(lfourth(args)))
+	if (is_const_null(get_finish_arg(state)))
 		state->gapfill_end = infer_gapfill_boundary(state, GAPFILL_END);
 	else
 	{
-		if (!is_simple_expr(lfourth(args)))
+		if (!is_simple_expr(get_finish_arg(state)))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("invalid time_bucket_gapfill argument: finish must be a simple "
 							"expression")));
-		arg_value = gapfill_exec_expr(state, lfourth(args), &isnull);
+		arg_value = gapfill_exec_expr(state, get_finish_arg(state), &isnull);
 
 		/*
 		 * the default value for finish is NULL but this is checked above,
@@ -765,7 +848,7 @@ gapfill_exec(CustomScanState *node)
 		if (FETCHED_ONE == state->state && state->subslot_time == state->next_timestamp)
 		{
 			state->state = FETCHED_NONE;
-			state->next_timestamp += state->gapfill_period;
+			gapfill_advance_timestamp(state);
 			return gapfill_state_return_subplan_slot(state);
 		}
 
@@ -774,7 +857,7 @@ gapfill_exec(CustomScanState *node)
 		{
 			Assert(state->state != FETCHED_NONE);
 			slot = gapfill_state_gaptuple_create(state, state->next_timestamp);
-			state->next_timestamp += state->gapfill_period;
+			gapfill_advance_timestamp(state);
 			return slot;
 		}
 

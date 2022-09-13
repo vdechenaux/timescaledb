@@ -31,6 +31,7 @@
 #include "bgw/job.h"
 #include "ts_catalog/continuous_agg.h"
 #include "cross_module_fn.h"
+#include "hypercube.h"
 #include "hypertable.h"
 #include "hypertable_cache.h"
 #include "scan_iterator.h"
@@ -1351,6 +1352,17 @@ ts_continuous_agg_find_integer_now_func_by_materialization_id(int32 mat_htid)
 	return par_dim;
 }
 
+TSDLLEXPORT void
+ts_continuous_agg_invalidate_chunk(Hypertable *ht, Chunk *chunk)
+{
+	int64 start = ts_chunk_primary_dimension_start(chunk);
+	int64 end = ts_chunk_primary_dimension_end(chunk);
+
+	Assert(hyperspace_get_open_dimension(ht->space, 0)->fd.id ==
+		   chunk->cube->slices[0]->fd.dimension_id);
+	ts_cm_functions->continuous_agg_invalidate_raw_ht(ht, start, end);
+}
+
 typedef struct Watermark
 {
 	int32 hyper_id;
@@ -1529,46 +1541,88 @@ ts_continuous_agg_bucket_width(const ContinuousAgg *agg)
  * a common procedure used by ts_compute_* below.
  */
 static Datum
-generic_time_bucket_ng(const ContinuousAggsBucketFunction *bf, Datum timestamp)
+generic_time_bucket(const ContinuousAggsBucketFunction *bf, Datum timestamp)
 {
 	/* bf->timezone can't be NULL. If timezone is not specified, "" is stored */
 	Assert(bf->timezone != NULL);
 
-	if (strlen(bf->timezone) > 0)
+	if (!bf->experimental)
 	{
+		if (strlen(bf->timezone) > 0)
+		{
+			if (TIMESTAMP_NOT_FINITE(bf->origin))
+			{
+				/* using default origin */
+				return DirectFunctionCall3(ts_timestamptz_timezone_bucket,
+										   IntervalPGetDatum(bf->bucket_width),
+										   timestamp,
+										   CStringGetTextDatum(bf->timezone));
+			}
+			else
+			{
+				/* custom origin specified */
+				return DirectFunctionCall4(ts_timestamptz_timezone_bucket,
+										   IntervalPGetDatum(bf->bucket_width),
+										   timestamp,
+										   CStringGetTextDatum(bf->timezone),
+										   TimestampTzGetDatum((TimestampTz) bf->origin));
+			}
+		}
+
 		if (TIMESTAMP_NOT_FINITE(bf->origin))
 		{
 			/* using default origin */
-			return DirectFunctionCall3(ts_time_bucket_ng_timezone,
+			return DirectFunctionCall2(ts_timestamp_bucket,
 									   IntervalPGetDatum(bf->bucket_width),
-									   timestamp,
-									   CStringGetTextDatum(bf->timezone));
+									   timestamp);
 		}
 		else
 		{
 			/* custom origin specified */
-			return DirectFunctionCall4(ts_time_bucket_ng_timezone_origin,
+			return DirectFunctionCall3(ts_timestamp_bucket,
 									   IntervalPGetDatum(bf->bucket_width),
 									   timestamp,
-									   TimestampTzGetDatum((TimestampTz) bf->origin),
-									   CStringGetTextDatum(bf->timezone));
+									   TimestampGetDatum(bf->origin));
 		}
-	}
-
-	if (TIMESTAMP_NOT_FINITE(bf->origin))
-	{
-		/* using default origin */
-		return DirectFunctionCall2(ts_time_bucket_ng_timestamp,
-								   IntervalPGetDatum(bf->bucket_width),
-								   timestamp);
 	}
 	else
 	{
-		/* custom origin specified */
-		return DirectFunctionCall3(ts_time_bucket_ng_timestamp,
-								   IntervalPGetDatum(bf->bucket_width),
-								   timestamp,
-								   TimestampGetDatum(bf->origin));
+		if (strlen(bf->timezone) > 0)
+		{
+			if (TIMESTAMP_NOT_FINITE(bf->origin))
+			{
+				/* using default origin */
+				return DirectFunctionCall3(ts_time_bucket_ng_timezone,
+										   IntervalPGetDatum(bf->bucket_width),
+										   timestamp,
+										   CStringGetTextDatum(bf->timezone));
+			}
+			else
+			{
+				/* custom origin specified */
+				return DirectFunctionCall4(ts_time_bucket_ng_timezone_origin,
+										   IntervalPGetDatum(bf->bucket_width),
+										   timestamp,
+										   TimestampTzGetDatum((TimestampTz) bf->origin),
+										   CStringGetTextDatum(bf->timezone));
+			}
+		}
+
+		if (TIMESTAMP_NOT_FINITE(bf->origin))
+		{
+			/* using default origin */
+			return DirectFunctionCall2(ts_time_bucket_ng_timestamp,
+									   IntervalPGetDatum(bf->bucket_width),
+									   timestamp);
+		}
+		else
+		{
+			/* custom origin specified */
+			return DirectFunctionCall3(ts_time_bucket_ng_timestamp,
+									   IntervalPGetDatum(bf->bucket_width),
+									   timestamp,
+									   TimestampGetDatum(bf->origin));
+		}
 	}
 }
 
@@ -1638,8 +1692,8 @@ ts_compute_inscribed_bucketed_refresh_window_variable(int64 *start, int64 *end,
 	start_old = ts_internal_to_time_value(*start, TIMESTAMPOID);
 	end_old = ts_internal_to_time_value(*end, TIMESTAMPOID);
 
-	start_new = generic_time_bucket_ng(bf, start_old);
-	end_new = generic_time_bucket_ng(bf, end_old);
+	start_new = generic_time_bucket(bf, start_old);
+	end_new = generic_time_bucket(bf, end_old);
 
 	if (DatumGetTimestamp(start_new) != DatumGetTimestamp(start_old))
 	{
@@ -1672,8 +1726,8 @@ ts_compute_circumscribed_bucketed_refresh_window_variable(int64 *start, int64 *e
 	 */
 	start_old = ts_internal_to_time_value(*start, TIMESTAMPOID);
 	end_old = ts_internal_to_time_value(*end, TIMESTAMPOID);
-	start_new = generic_time_bucket_ng(bf, start_old);
-	end_new = generic_time_bucket_ng(bf, end_old);
+	start_new = generic_time_bucket(bf, start_old);
+	end_new = generic_time_bucket(bf, end_old);
 
 	if (DatumGetTimestamp(end_new) != DatumGetTimestamp(end_old))
 	{
@@ -1704,7 +1758,7 @@ ts_compute_beginning_of_the_next_bucket_variable(int64 timeval,
 	 */
 	val_old = ts_internal_to_time_value(timeval, TIMESTAMPOID);
 
-	val_new = generic_time_bucket_ng(bf, val_old);
+	val_new = generic_time_bucket(bf, val_old);
 	val_new = generic_add_interval(bf, val_new);
 	return ts_time_value_to_internal(val_new, TIMESTAMPOID);
 }
