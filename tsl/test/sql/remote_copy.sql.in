@@ -14,7 +14,7 @@ SELECT * FROM add_data_node('data_node_2', host => 'localhost', database => :'DN
 SELECT * FROM add_data_node('data_node_3', host => 'localhost', database => :'DN_DBNAME_3');
 GRANT USAGE ON FOREIGN SERVER data_node_1, data_node_2, data_node_3 TO PUBLIC;
 
-SET timescaledb.elide_data_node_name_in_errors = 'on';
+SET timescaledb.hide_data_node_name_in_errors = 'on';
 
 -- Start out testing text copy code
 SET timescaledb.enable_connection_binary_data=false;
