@@ -343,10 +343,11 @@ create_connection_list_for_chunk(CopyConnectionState *state, int32 chunk_id,
 
 /*
  * Flush all active data node connections simultaneously, instead of doing this
- * one-by-one in remote_connection_end_copy().
+ * one-by-one in remote_connection_end_copy(). Implies that there were no errors
+ * so far. For error handling, use remote_connection_end_copy().
  */
 static void
-flush_active_connections(const CopyConnectionState *state)
+flush_active_connections_on_success(const CopyConnectionState *state)
 {
 	List *to_end_copy = NIL;
 	ListCell *active_cell;
@@ -357,14 +358,18 @@ flush_active_connections(const CopyConnectionState *state)
 		TSConnectionStatus status = remote_connection_get_status(conn);
 		if (status != CONN_COPY_IN)
 		{
-			/*
-			 * This is also called when terminating with error, so some
-			 * connections might be in some error status, not CONN_COPY_IN.
-			 */
-			continue;
+			/* Should have active COPY on all connections here. */
+			elog(ERROR, "the connection is expected to be in CONN_COPY_IN status, but the actual status is %d",
+				status);
 		}
 
 		PGconn *pg_conn = remote_connection_get_pg_conn(conn);
+
+		/*
+		 * This function expects that the COPY processing so far was
+		 * successful, so the data connections should be in nonblocking
+		 * mode.
+		 */
 		Assert(PQisnonblocking(pg_conn));
 
 		PGresult *res = PQgetResult(pg_conn);
@@ -443,7 +448,13 @@ flush_active_connections(const CopyConnectionState *state)
 		{
 			TSConnection *conn = lfirst(to_flush_cell);
 			PGconn *pg_conn = remote_connection_get_pg_conn(conn);
-			Assert(PQisnonblocking(pg_conn));
+
+			/*
+			 * This function expects that the COPY processing so far was
+			 * successful, so the data connections should be in nonblocking
+			 * mode.
+			 */
+			Assert(PQisnonblocking(pg_conn) == 1);
 
 			/* Write out all the pending buffers. */
 			int res = PQflush(pg_conn);
@@ -1158,7 +1169,7 @@ remote_copy_process_and_send_data(RemoteCopyContext *context)
 				 * a new chunk. They might have outstanding COPY data from the
 				 * previous batch.
 				 */
-				flush_active_connections(&context->connection_state);
+				flush_active_connections_on_success(&context->connection_state);
 				did_flush = true;
 			}
 			chunk = ts_hypertable_create_chunk_for_point(ht, point);
@@ -1334,10 +1345,17 @@ remote_copy_process_and_send_data(RemoteCopyContext *context)
 	return true;
 }
 
+/*
+ * This function is for successfully finishing the COPY: it tries to flush all
+ * the outstanding COPY data to the data nodes. It is sensitive to erroneous
+ * state of connections and is going to fail if they are in a wrong state due to
+ * other errors. Resetting the connections after a known error should be done
+ * with remote_connection_end_copy, not this function.
+ */
 void
-remote_copy_end(RemoteCopyContext *context)
+remote_copy_end_on_success(RemoteCopyContext *context)
 {
-	flush_active_connections(&context->connection_state);
+	flush_active_connections_on_success(&context->connection_state);
 	end_copy_on_data_nodes(&context->connection_state);
 	MemoryContextDelete(context->mctx);
 }
@@ -1396,12 +1414,13 @@ remote_distributed_copy(const CopyStmt *stmt, CopyChunkState *ccstate, List *att
 	PG_CATCH();
 	{
 		/* If we hit an error, make sure we end our in-progress COPYs */
-		remote_copy_end(context);
+		end_copy_on_data_nodes(&context->connection_state);
+		MemoryContextDelete(context->mctx);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
-	remote_copy_end(context);
+	remote_copy_end_on_success(context);
 	MemoryContextSwitchTo(oldmctx);
 
 	return processed;
@@ -1485,7 +1504,8 @@ remote_copy_send_slot(RemoteCopyContext *context, TupleTableSlot *slot, const Ch
 	PG_CATCH();
 	{
 		/* If we hit an error, make sure we end our in-progress COPYs */
-		remote_copy_end(context);
+		end_copy_on_data_nodes(&context->connection_state);
+		MemoryContextDelete(context->mctx);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

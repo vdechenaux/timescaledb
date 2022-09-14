@@ -847,6 +847,9 @@ remote_connection_set_status(TSConnection *conn, TSConnectionStatus status)
 {
 	Assert(conn != NULL);
 	conn->status = status;
+
+	/* Should be blocking except when doing COPY. */
+	Assert(PQisnonblocking(conn->pg_conn) == (conn->status == CONN_COPY_IN));
 }
 
 TSConnectionStatus
@@ -2328,20 +2331,25 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 	if (res == NULL || PQresultStatus(res) != PGRES_COPY_IN)
 	{
 		remote_connection_set_status(conn, res == NULL ? CONN_IDLE : CONN_PROCESSING);
-		elog(ERROR, "connection marked as CONN_COPY_IN, but no COPY is in progress");
 	}
 
-	if (conn->binary_copy && !send_end_binary_copy_data(conn, err))
-		return false;
+	/*
+	 * Finish the COPY if needed.
+	 */
+	if (remote_connection_get_status(conn) == CONN_COPY_IN)
+	{
+		if (conn->binary_copy && !send_end_binary_copy_data(conn, err))
+			return false;
 
-	if (PQputCopyEnd(conn->pg_conn, NULL) != 1)
-		return fill_connection_error(err,
-									 ERRCODE_CONNECTION_EXCEPTION,
-									 "could not end remote COPY",
-									 conn);
+		if (PQputCopyEnd(conn->pg_conn, NULL) != 1)
+			return fill_connection_error(err,
+										 ERRCODE_CONNECTION_EXCEPTION,
+										 "could not end remote COPY",
+										 conn);
 
-	success = true;
-	remote_connection_set_status(conn, CONN_PROCESSING);
+		success = true;
+		remote_connection_set_status(conn, CONN_PROCESSING);
+	}
 
 	while ((res = PQgetResult(conn->pg_conn)))
 	{
