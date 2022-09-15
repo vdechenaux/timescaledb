@@ -627,7 +627,7 @@ static void
 end_copy_on_data_nodes(CopyConnectionState *state)
 {
 	/* Exit the copy subprotocol. */
-	TSConnectionError err;
+	TSConnectionError err = {0};
 	bool failure = false;
 	ListCell *lc;
 	foreach (lc, state->connections_in_use)
@@ -637,7 +637,6 @@ end_copy_on_data_nodes(CopyConnectionState *state)
 		if (remote_connection_get_status(conn) == CONN_COPY_IN &&
 			!remote_connection_end_copy(conn, &err))
 		{
-			remote_connection_error_elog(&err, INFO);
 			failure = true;
 		}
 	}

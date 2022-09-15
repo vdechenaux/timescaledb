@@ -2237,8 +2237,7 @@ send_end_binary_copy_data(const TSConnection *conn, TSConnectionError *err)
 bool
 remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 {
-	PGresult *res;
-	bool success;
+	PGresult *res = NULL;
 
 	/*
 	 * In any case, try to switch the connection into the blocking mode, because
@@ -2347,10 +2346,10 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 										 "could not end remote COPY",
 										 conn);
 
-		success = true;
 		remote_connection_set_status(conn, CONN_PROCESSING);
 	}
 
+	bool success = true;
 	while ((res = PQgetResult(conn->pg_conn)))
 	{
 		ExecStatusType status = PQresultStatus(res);
