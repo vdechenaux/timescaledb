@@ -6,8 +6,11 @@
 # routines for setup.
 
 package TimescaleNode;
-use parent qw(PostgresNode);
-use TestLib qw(slurp_file);
+use if $ENV{PG_VERSION_MAJOR} >= 15, 'parent', qw(PostgreSQL::Test::Cluster);
+use if $ENV{PG_VERSION_MAJOR} < 15,  'parent', qw(PostgresNode);
+use
+  if $ENV{PG_VERSION_MAJOR} >= 15, 'PostgreSQL::Test::Utils', qw(slurp_file);
+use if $ENV{PG_VERSION_MAJOR} < 15, 'TestLib', qw(slurp_file);
 use strict;
 use warnings;
 
