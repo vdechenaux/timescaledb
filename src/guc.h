@@ -66,6 +66,10 @@ typedef enum HypertableDistType
 extern TSDLLEXPORT HypertableDistType ts_guc_hypertable_distributed_default;
 extern TSDLLEXPORT int ts_guc_hypertable_replication_factor_default;
 
+/* Hook for plugins to allow additional SSL options */
+typedef void (*set_ssl_options_hook_type)(const char *user_name);
+extern TSDLLEXPORT set_ssl_options_hook_type ts_set_ssl_options_hook;
+
 #ifdef TS_DEBUG
 extern bool ts_shutdown_bgw;
 extern char *ts_current_timestamp_mock;
@@ -75,5 +79,6 @@ extern char *ts_current_timestamp_mock;
 
 void _guc_init(void);
 void _guc_fini(void);
+extern TSDLLEXPORT void ts_assign_ssl_options_hook(void *fn);
 
 #endif /* TIMESCALEDB_GUC_H */
