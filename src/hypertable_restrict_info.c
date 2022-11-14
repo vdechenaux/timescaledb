@@ -20,6 +20,7 @@
 #include "dimension.h"
 #include "dimension_slice.h"
 #include "dimension_vector.h"
+#include "guc.h"
 #include "hypercube.h"
 #include "partitioning.h"
 #include "scan_iterator.h"
@@ -685,17 +686,20 @@ ts_hypertable_restrict_info_get_chunks(HypertableRestrictInfo *hri, Hypertable *
 			chunk_ids = ts_chunk_id_find_in_subspace(ht, dimension_vectors);
 		}
 
-		/*
-		 * Always include the OSM chunk if we have one. It has some virtual
-		 * dimension slices (at the moment, (+inf, +inf) slice for time, but it
-		 * used to be different and might change again.) So sometimes it will
-		 * match and sometimes it won't, so we have to check if it's already
-		 * there not to add a duplicate.
-		 */
-		int32 osm_chunk_id = ts_chunk_get_osm_chunk_id(ht->fd.id);
-		if (osm_chunk_id != 0 && !list_member_int(chunk_ids, osm_chunk_id))
+		if (ts_guc_enable_osm_reads)
 		{
-			chunk_ids = lappend_int(chunk_ids, osm_chunk_id);
+			/*
+			 * Always include the OSM chunk if we have one. It has some virtual
+			 * dimension slices (at the moment, (+inf, +inf) slice for time, but it
+			 * used to be different and might change again.) So sometimes it will
+			 * match and sometimes it won't, so we have to check if it's already
+			 * there not to add a duplicate.
+			 */
+			int32 osm_chunk_id = ts_chunk_get_osm_chunk_id(ht->fd.id);
+			if (osm_chunk_id != 0 && !list_member_int(chunk_ids, osm_chunk_id))
+			{
+				chunk_ids = lappend_int(chunk_ids, osm_chunk_id);
+			}
 		}
 	}
 
