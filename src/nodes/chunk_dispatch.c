@@ -145,6 +145,17 @@ ts_chunk_dispatch_get_chunk_insert_state(ChunkDispatch *dispatch, Point *point,
 		 * where the chunk already exists.
 		 */
 		Chunk *new_chunk = ts_hypertable_find_chunk_for_point(dispatch->hypertable, point);
+
+#if PG14_GE
+		/*
+		 * Frozen chunks require at least PG14.
+		 */
+		if (new_chunk && ts_chunk_is_frozen(new_chunk))
+			elog(ERROR,
+				 "cannot INSERT into frozen chunk \"%s\"",
+				 get_rel_name(new_chunk->table_id));
+#endif
+
 		if (new_chunk == NULL)
 		{
 			new_chunk = ts_hypertable_create_chunk_for_point(dispatch->hypertable, point);
