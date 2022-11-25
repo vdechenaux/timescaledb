@@ -1,7 +1,7 @@
 name: SQLsmith
 on:
   schedule:
-    # run daily 20:00 on main branch
+    # run daily 2:00 on main branch
     - cron: '0 2 * * *'
   workflow_dispatch:
   push:
@@ -11,7 +11,6 @@ jobs:
   sqlsmith:
     name: SQLsmith PG${{ matrix.pg }}
     runs-on: ${{ matrix.os }}
-    needs: config
     strategy:
       matrix:
         os: ["ubuntu-20.04"]
@@ -40,9 +39,9 @@ jobs:
 
     - name: Build TimescaleDB
       run: |
-        ./bootstrap -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DPG_SOURCE_DIR=~/$PG_SRC_DIR -DPG_PATH=~/$PG_INSTALL_DIR ${{ matrix.tsdb_build_args }}
+        ./bootstrap -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ${{ matrix.tsdb_build_args }}
         make -C build
-        make -C build install
+        sudo make -C build install
 
     - name: Checkout sqlsmith
       uses: actions/checkout@v3
@@ -61,8 +60,8 @@ jobs:
     - name: Setup test environment
       run: |
         mkdir ~/pgdata
-        ~/$PG_INSTALL_DIR/bin/initdb ~/pgdata
-        ~/$PG_INSTALL_DIR/bin/pg_ctl -D ~/pgdata start -o "-cshared_preload_libraries=timescaledb" -o "-cmax_connections=200" -o "-cmax_prepared_transactions=100"
+        /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_ctl initdb -D ~/pgdata
+        /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_ctl -D ~/pgdata start -o "-cshared_preload_libraries=timescaledb" -o "-cmax_connections=200" -o "-cmax_prepared_transactions=100" -o "-cunix_socket_directories=/tmp"
         psql -h /tmp postgres -c 'CREATE DATABASE smith;'
         psql -h /tmp smith -c 'CREATE EXTENSION timescaledb;'
         psql -h /tmp smith -c '\i ${{ github.workspace }}/tsl/test/shared/sql/include/shared_setup.sql'
