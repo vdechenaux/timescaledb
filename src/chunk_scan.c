@@ -89,17 +89,12 @@ ts_chunk_scan_by_chunk_ids(const Hyperspace *hs, const List *chunk_ids, unsigned
 				ts_chunk_formdata_fill(&chunk->fd, ti);
 				MemoryContextSwitchTo(old_mcxt);
 
-				bool is_disabled_osm_chunk = !ts_guc_enable_osm_reads && IS_OSM_CHUNK(chunk);
+				chunk->constraints = NULL;
+				chunk->cube = NULL;
+				chunk->hypertable_relid = hs->main_table_relid;
 
-				if (!is_disabled_osm_chunk)
-				{
-					chunk->constraints = NULL;
-					chunk->cube = NULL;
-					chunk->hypertable_relid = hs->main_table_relid;
-
-					unlocked_chunks[unlocked_chunk_count] = chunk;
-					unlocked_chunk_count++;
-				}
+				unlocked_chunks[unlocked_chunk_count] = chunk;
+				unlocked_chunk_count++;
 			}
 
 			MemoryContextSwitchTo(work_mcxt);
