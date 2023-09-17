@@ -3,9 +3,10 @@ name: Coverity
   schedule:
     # run at 22:00 on every saturday
     - cron: '0 22 * * SAT'
+  pull_request:
   push:
-    branches:
-      - coverity_scan
+#    branches:
+#      - coverity_scan
 jobs:
 
   coverity:
@@ -33,24 +34,24 @@ jobs:
       run: |
         wget https://scan.coverity.com/download/linux64 \
           --post-data "token=${{ secrets.COVERITY_TOKEN }}&project=timescale%2Ftimescaledb" \
-          -O coverity_tool.tgz -q
+          -O coverity_tool.tgz
         tar xf coverity_tool.tgz
         mv cov-analysis-linux64-* coverity
 
     - name: Build TimescaleDB
       run: |
-        PATH="$GITHUB_WORKSPACE/coverity/bin:$PATH"
+        PATH="$GITHUB_WORKSPACE/coverity/bin:/usr/lib/postgresql/${{ matrix.pg }}/bin:$PATH"
         ./bootstrap -DCMAKE_BUILD_TYPE=Release
         cov-build --dir cov-int make -C build
 
-    - name: Upload report
-      env:
-        FORM_EMAIL: --form email=ci@timescale.com
-        FORM_FILE: --form file=@timescaledb.tgz
-        FORM_DESC: --form description="CI"
-        FORM_TOKEN: --form token="${{ secrets.COVERITY_TOKEN }}"
-        COVERITY_URL: https://scan.coverity.com/builds?project=timescale%2Ftimescaledb
-      run: |
-        tar czf timescaledb.tgz cov-int
-        curl $FORM_TOKEN $FORM_EMAIL $FORM_DESC $FORM_FILE \
-          --form version="$(grep '^version' version.config | cut -b11-)-${{ matrix.pg }}" $COVERITY_URL
+#    - name: Upload report
+#      env:
+#        FORM_EMAIL: --form email=ci@timescale.com
+#        FORM_FILE: --form file=@timescaledb.tgz
+#        FORM_DESC: --form description="CI"
+#        FORM_TOKEN: --form token="${{ secrets.COVERITY_TOKEN }}"
+#        COVERITY_URL: https://scan.coverity.com/builds?project=timescale%2Ftimescaledb
+#      run: |
+#        tar czf timescaledb.tgz cov-int
+#        curl $FORM_TOKEN $FORM_EMAIL $FORM_DESC $FORM_FILE \
+#          --form version="$(grep '^version' version.config | cut -b11-)-${{ matrix.pg }}" $COVERITY_URL
