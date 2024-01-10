@@ -1484,6 +1484,17 @@ process_grant_and_revoke(ProcessUtilityArgs *args)
 												  was_schema_op,
 												  &compressed_hypertable->fd.schema_name,
 												  &compressed_hypertable->fd.table_name);
+						List *chunks =
+							ts_chunk_get_by_hypertable_id(hypertable->fd.compressed_hypertable_id);
+						ListCell *cell;
+						foreach (cell, chunks)
+						{
+							Chunk *chunk = lfirst(cell);
+							process_grant_add_by_name(stmt,
+													  was_schema_op,
+													  &chunk->fd.schema_name,
+													  &chunk->fd.table_name);
+						}
 					}
 				}
 
