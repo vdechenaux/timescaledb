@@ -795,7 +795,6 @@ tsl_process_compress_table(AlterTableCmd *cmd, Hypertable *ht,
 	Oid ownerid;
 	List *segmentby_cols;
 	List *orderby_cols;
-	List *constraint_list = NIL;
 	CompressionSettings *settings;
 
 	ts_feature_flag_check(FEATURE_HYPERTABLE_COMPRESSION);
@@ -848,7 +847,9 @@ tsl_process_compress_table(AlterTableCmd *cmd, Hypertable *ht,
 	/* Check if we can create a compressed hypertable with existing
 	 * constraints and indexes. */
 	List *indexes = NIL;
-	constraint_list = validate_existing_constraints(ht, settings, &indexes);
+	validate_existing_constraints(ht, settings, &indexes);
+	// List *constraint_list = NIL;
+	// constraint_list = validate_existing_constraints(ht, settings, &indexes);
 	validate_existing_indexes(ht, settings, indexes);
 	list_free(indexes);
 
