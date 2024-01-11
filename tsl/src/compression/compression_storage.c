@@ -12,6 +12,7 @@
 
 #include <postgres.h>
 #include <access/reloptions.h>
+#include <access/xact.h>
 #include <catalog/indexing.h>
 #include <catalog/objectaccess.h>
 #include <catalog/objectaddress.h>
