@@ -12,16 +12,17 @@
 
 #include <postgres.h>
 #include <access/reloptions.h>
+#include <catalog/indexing.h>
 #include <catalog/objectaccess.h>
 #include <catalog/objectaddress.h>
-#include <catalog/indexing.h>
 #include <catalog/pg_class.h>
 #include <catalog/toasting.h>
-#include <utils/lsyscache.h>
-#include <utils/syscache.h>
 #include <commands/tablecmds.h>
 #include <commands/tablespace.h>
 #include <nodes/makefuncs.h>
+#include <utils/builtins.h>
+#include <utils/lsyscache.h>
+#include <utils/syscache.h>
 
 #include "extension_constants.h"
 #include "custom_type_cache.h"
