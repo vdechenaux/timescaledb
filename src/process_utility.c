@@ -3954,14 +3954,6 @@ process_create_trigger_start(ProcessUtilityArgs *args)
 		return DDL_CONTINUE;
 	}
 
-	if (stmt->transitionRels)
-	{
-		ts_cache_release(hcache);
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("trigger with transition tables not supported on hypertables")));
-	}
-
 	add_hypertable_to_process_args(args, ht);
 
 	if (!stmt->row)
