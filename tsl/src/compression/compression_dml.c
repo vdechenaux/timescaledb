@@ -34,19 +34,21 @@ decompress_batches_indexscan(Relation in_rel, Relation out_rel, Relation index_r
 							 Snapshot snapshot, ScanKeyData *index_scankeys, int num_index_scankeys,
 							 ScanKeyData *heap_scankeys, int num_heap_scankeys,
 							 ScanKeyData *mem_scankeys, int num_mem_scankeys,
-							 Bitmapset *null_columns, List *is_nulls);
+							 OnConflictAction on_conflict, Bitmapset *null_columns, List *is_nulls);
 static struct decompress_batches_stats
 decompress_batches_seqscan(Relation in_rel, Relation out_rel, Snapshot snapshot,
 						   ScanKeyData *scankeys, int num_scankeys, ScanKeyData *mem_scankeys,
-						   int num_mem_scankeys, Bitmapset *null_columns, List *is_nulls);
+						   int num_mem_scankeys, OnConflictAction on_conflict,
+						   Bitmapset *null_columns, List *is_nulls);
 
-static bool batch_matches(RowDecompressor *decompressor, ScanKeyData *scankeys, int num_scankeys);
+static bool batch_matches(RowDecompressor *decompressor, ScanKeyData *scankeys, int num_scankeys,
+						  OnConflictAction on_conflict);
 static void process_predicates(Chunk *ch, CompressionSettings *settings, List *predicates,
 							   ScanKeyData **mem_scankeys, int *num_mem_scankeys,
 							   List **heap_filters, List **index_filters, List **is_null);
 static Relation find_matching_index(Relation comp_chunk_rel, List **index_filters,
 									List **heap_filters);
-static Bitmapset *compressed_insert_key_columns(Relation relation);
+static Bitmapset *compressed_insert_key_columns(Relation relation, bool *covering);
 static BatchFilter *make_batchfilter(char *column_name, StrategyNumber strategy, Oid collation,
 									 RegProcedure opcode, Const *value, bool is_null_check,
 									 bool is_null, bool is_array_op);
@@ -84,7 +86,20 @@ decompress_batches_for_insert(const ChunkInsertState *cis, TupleTableSlot *slot)
 	CompressionSettings *settings = ts_compression_settings_get(cis->compressed_chunk_table_id);
 	Assert(settings);
 
-	Bitmapset *key_columns = compressed_insert_key_columns(out_rel);
+	bool covering;
+	Bitmapset *key_columns = compressed_insert_key_columns(out_rel, &covering);
+	OnConflictAction on_conflict = ONCONFLICT_UPDATE;
+	/*
+	 *  When no on conflict clause is specified and the index is covering, we can
+	 *  error out before decompressing anything.
+	 *  For ON CONFLICT DO NOTHING with covering index we can skip decompression
+	 *  and abort the insert when we find a matching tuple.
+	 *  For ON CONFLICT DO UPDATE we need to decompress the tuple on match.
+	 */
+	if (covering)
+	{
+		on_conflict = chunk_dispatch_get_on_conflict_action(cis->cds->dispatch);
+	}
 	Bitmapset *index_columns = NULL;
 	Bitmapset *null_columns = NULL;
 	struct decompress_batches_stats stats;
@@ -147,6 +162,7 @@ decompress_batches_for_insert(const ChunkInsertState *cis, TupleTableSlot *slot)
 											 num_heap_scankeys,
 											 mem_scankeys,
 											 num_mem_scankeys,
+											 on_conflict,
 											 NULL, /* no null column check for non-segmentby
 													  columns */
 											 NIL);
@@ -171,6 +187,7 @@ decompress_batches_for_insert(const ChunkInsertState *cis, TupleTableSlot *slot)
 										   num_heap_scankeys,
 										   mem_scankeys,
 										   num_mem_scankeys,
+										   on_conflict,
 										   null_columns,
 										   NIL);
 		bms_free(key_columns);
@@ -260,6 +277,7 @@ decompress_batches_for_update_delete(HypertableModifyState *ht_state, Chunk *chu
 											 num_scankeys,
 											 mem_scankeys,
 											 num_mem_scankeys,
+											 ONCONFLICT_UPDATE,
 											 null_columns,
 											 is_null);
 		/* close the selected index */
@@ -274,6 +292,7 @@ decompress_batches_for_update_delete(HypertableModifyState *ht_state, Chunk *chu
 										   num_scankeys,
 										   mem_scankeys,
 										   num_mem_scankeys,
+										   ONCONFLICT_UPDATE,
 										   null_columns,
 										   is_null);
 	}
@@ -318,7 +337,7 @@ decompress_batches_indexscan(Relation in_rel, Relation out_rel, Relation index_r
 							 Snapshot snapshot, ScanKeyData *index_scankeys, int num_index_scankeys,
 							 ScanKeyData *heap_scankeys, int num_heap_scankeys,
 							 ScanKeyData *mem_scankeys, int num_mem_scankeys,
-							 Bitmapset *null_columns, List *is_nulls)
+							 OnConflictAction on_conflict, Bitmapset *null_columns, List *is_nulls)
 {
 	HeapTuple compressed_tuple;
 	RowDecompressor decompressor;
@@ -404,7 +423,8 @@ decompress_batches_indexscan(Relation in_rel, Relation out_rel, Relation index_r
 						  decompressor.compressed_datums,
 						  decompressor.compressed_is_nulls);
 
-		if (num_mem_scankeys && !batch_matches(&decompressor, mem_scankeys, num_mem_scankeys))
+		if (num_mem_scankeys &&
+			!batch_matches(&decompressor, mem_scankeys, num_mem_scankeys, on_conflict))
 		{
 			row_decompressor_reset(&decompressor);
 			continue;
@@ -470,7 +490,8 @@ decompress_batches_indexscan(Relation in_rel, Relation out_rel, Relation index_r
 static struct decompress_batches_stats
 decompress_batches_seqscan(Relation in_rel, Relation out_rel, Snapshot snapshot,
 						   ScanKeyData *scankeys, int num_scankeys, ScanKeyData *mem_scankeys,
-						   int num_mem_scankeys, Bitmapset *null_columns, List *is_nulls)
+						   int num_mem_scankeys, OnConflictAction on_conflict,
+						   Bitmapset *null_columns, List *is_nulls)
 {
 	RowDecompressor decompressor;
 	bool decompressor_initialized = false;
@@ -534,7 +555,8 @@ decompress_batches_seqscan(Relation in_rel, Relation out_rel, Snapshot snapshot,
 						  decompressor.compressed_datums,
 						  decompressor.compressed_is_nulls);
 
-		if (num_mem_scankeys && !batch_matches(&decompressor, mem_scankeys, num_mem_scankeys))
+		if (num_mem_scankeys &&
+			!batch_matches(&decompressor, mem_scankeys, num_mem_scankeys, on_conflict))
 		{
 			row_decompressor_reset(&decompressor);
 			continue;
@@ -582,7 +604,8 @@ decompress_batches_seqscan(Relation in_rel, Relation out_rel, Snapshot snapshot,
 }
 
 static bool
-batch_matches(RowDecompressor *decompressor, ScanKeyData *scankeys, int num_scankeys)
+batch_matches(RowDecompressor *decompressor, ScanKeyData *scankeys, int num_scankeys,
+			  OnConflictAction on_conflict)
 {
 	int num_tuples = decompress_batch(decompressor);
 
@@ -599,6 +622,12 @@ batch_matches(RowDecompressor *decompressor, ScanKeyData *scankeys, int num_scan
 #endif
 		if (valid)
 		{
+			if (on_conflict == ONCONFLICT_NONE)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_UNIQUE_VIOLATION),
+						 errmsg("duplicate key value violates unique constraint")));
+			}
 			return true;
 		}
 	}
@@ -745,7 +774,7 @@ decompress_chunk_walker(PlanState *ps, struct decompress_chunk_context *ctx)
  * indexes we ignore predicate.
  */
 static Bitmapset *
-compressed_insert_key_columns(Relation relation)
+compressed_insert_key_columns(Relation relation, bool *covering)
 {
 	Bitmapset *shared_attrs = NULL; /* indexed columns */
 	ListCell *l;
@@ -792,8 +821,24 @@ compressed_insert_key_columns(Relation relation)
 		}
 		index_close(indexDesc, AccessShareLock);
 
-		shared_attrs = shared_attrs ? bms_intersect(idx_attrs, shared_attrs) : idx_attrs;
+		if (!shared_attrs)
+		{
+			/* First iteration */
+			shared_attrs = idx_attrs;
+			*covering = indexDesc->rd_indexprs == NIL;
+			;
+		}
+		else
+		{
+			shared_attrs = bms_intersect(idx_attrs, shared_attrs);
+			*covering = true;
+		}
 
+		/* When multiple unique indexes are present, in theory there could be no shared
+		 * columns even though that is very unlikely as they will probably at least share
+		 * the partitioning columns. But since we are looking at chunk indexes here that
+		 * is not guaranteed.
+		 */
 		if (!shared_attrs)
 			return NULL;
 	}
